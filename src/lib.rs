@@ -1,7 +1,16 @@
+mod analysis;
+mod audio;
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+pub use analysis::{
+    AnalysisAnomaliesV1, AudioMetadataV1, LoudnessMetricsV1, PairDiffV1, SpectralBandV1,
+    StereoMetricsV1, TrackAnalysisV1, TransientMetricsV1, analyze_track,
+};
+pub use audio::{AudioBlock, AudioReader, AudioStreamInfo};
 
 pub type Result<T> = std::result::Result<T, DoppelbangerError>;
 
@@ -29,6 +38,19 @@ pub enum DoppelbangerError {
     },
     MissingArgument(&'static str),
     UnexpectedArgument(String),
+    AudioProcessing {
+        operation: &'static str,
+        path: PathBuf,
+        message: String,
+    },
+    MissingAudioProperty {
+        property: &'static str,
+        path: PathBuf,
+    },
+    UnsupportedChannelCount {
+        path: PathBuf,
+        channels: usize,
+    },
     Io(String),
 }
 
@@ -55,6 +77,23 @@ impl fmt::Display for DoppelbangerError {
             }
             Self::MissingArgument(name) => write!(f, "missing required argument {name}"),
             Self::UnexpectedArgument(arg) => write!(f, "unexpected argument {arg}"),
+            Self::AudioProcessing {
+                operation,
+                path,
+                message,
+            } => write!(
+                f,
+                "failed to {operation} audio {}: {message}",
+                path.display()
+            ),
+            Self::MissingAudioProperty { property, path } => {
+                write!(f, "audio {} is missing {property}", path.display())
+            }
+            Self::UnsupportedChannelCount { path, channels } => write!(
+                f,
+                "audio {} must be stereo, found {channels} channels",
+                path.display()
+            ),
             Self::Io(message) => write!(f, "{message}"),
         }
     }
