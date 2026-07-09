@@ -1,2 +1,6 @@
 blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/williamshayden/doppelbanger/security/advisories/new
+    about: Report security issues privately. Do not include vulnerability details in a public issue.
 contact_links: []
