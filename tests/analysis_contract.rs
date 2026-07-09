@@ -113,6 +113,28 @@ fn rejects_non_finite_decoded_samples() {
     assert!(error.contains(path.to_str().unwrap()));
 }
 
+#[test]
+fn spectrum_preserves_antiphase_stereo_energy() {
+    let path = fixture_path("antiphase.wav");
+    write_stereo_signal(&path, 48_000, 4.0, |frame, sample_rate| {
+        let sample = sine_sample(frame, sample_rate, 1_500.0, 0.5);
+        (sample, -sample)
+    });
+
+    let analysis = analyze_track(&path).unwrap();
+    let dominant_band = analysis
+        .spectrum
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| left.relative_db.total_cmp(&right.relative_db))
+        .unwrap()
+        .0;
+
+    assert_eq!(dominant_band, 5);
+    assert!(analysis.spectrum[5].relative_db > -0.1);
+    assert!(analysis.stereo.correlation < -0.999);
+}
+
 fn fixture_path(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("doppelbanger-analysis-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
@@ -123,6 +145,10 @@ fn sine(frequency_hz: f32, amplitude: f32) -> impl Fn(usize, u32) -> f32 {
     move |frame, sample_rate| {
         amplitude * (std::f32::consts::TAU * frequency_hz * frame as f32 / sample_rate as f32).sin()
     }
+}
+
+fn sine_sample(frame: usize, sample_rate: u32, frequency_hz: f32, amplitude: f32) -> f32 {
+    amplitude * (std::f32::consts::TAU * frequency_hz * frame as f32 / sample_rate as f32).sin()
 }
 
 fn write_signal(
@@ -143,6 +169,28 @@ fn write_signal(
         let sample = signal(frame, sample_rate);
         writer.write_sample(sample).unwrap();
         writer.write_sample(sample).unwrap();
+    }
+    writer.finalize().unwrap();
+}
+
+fn write_stereo_signal(
+    path: &Path,
+    sample_rate: u32,
+    duration_seconds: f32,
+    signal: impl Fn(usize, u32) -> (f32, f32),
+) {
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer = hound::WavWriter::create(path, spec).unwrap();
+    let frames = (sample_rate as f32 * duration_seconds) as usize;
+    for frame in 0..frames {
+        let (left, right) = signal(frame, sample_rate);
+        writer.write_sample(left).unwrap();
+        writer.write_sample(right).unwrap();
     }
     writer.finalize().unwrap();
 }

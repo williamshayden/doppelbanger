@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub use analysis::{
-    AnalysisAnomaliesV1, AudioMetadataV1, LoudnessMetricsV1, PairDiffV1, SpectralBandV1,
-    StereoMetricsV1, TrackAnalysisV1, TransientMetricsV1, analyze_track,
+    ANALYZER_VERSION, AnalysisAnomaliesV1, AudioMetadataV1, LoudnessMetricsV1, PairDiffV1,
+    SpectralBandV1, StereoMetricsV1, TrackAnalysisV1, TransientMetricsV1, analyze_track,
 };
 pub use api::{
     ApiClient, EditablePlanFileV1, MasteringJob, MasteringRequestState, RequestStatus,
@@ -21,7 +21,8 @@ pub use api::{
 };
 pub use audio::{AudioBlock, AudioReader, AudioStreamInfo};
 pub use benchmark::{
-    BenchmarkGatesV1, BenchmarkItemV1, BenchmarkReportV1, BenchmarkSummaryV1, run_benchmark,
+    BenchmarkGatesV1, BenchmarkItemV1, BenchmarkProvenanceV1, BenchmarkReportV1,
+    BenchmarkSummaryV1, run_benchmark,
 };
 pub use plan::{
     EqFilterKindV1, EqFilterV1, MasteringPlanV1, PROCESSOR_VERSION, TRUE_PEAK_CEILING_DBTP,

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AudioFormat, AudioReader, DoppelbangerError, Result};
 
-const ANALYZER_VERSION: &str = "analysis-v1";
+pub const ANALYZER_VERSION: &str = "analysis-v1";
 const ACTIVE_AMPLITUDE: f64 = 0.000_316_227_766;
 const SPECTRUM_WINDOW: usize = 4096;
 const SPECTRUM_HOP: usize = 1024;
@@ -388,8 +388,7 @@ impl SpectrumAccumulator {
             if !(20.0..16_000.0).contains(&frequency) {
                 continue;
             }
-            let mono = (left_fft[bin] + right_fft[bin]) * 0.5;
-            let power = mono.norm_sqr() as f64;
+            let power = (left_fft[bin].norm_sqr() as f64 + right_fft[bin].norm_sqr() as f64) * 0.5;
             if let Some(index) = spectral_band_index(frequency) {
                 band_power[index] += power;
             }
