@@ -1,0 +1,35 @@
+name: doppelbanger
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: doppelbanger
+      POSTGRES_USER: doppelbanger
+      POSTGRES_PASSWORD: doppelbanger
+    ports:
+      - "54329:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U doppelbanger -d doppelbanger"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: postgrest/postgrest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://doppelbanger:doppelbanger@db:5432/doppelbanger
+      PGRST_DB_SCHEMAS: api
+      PGRST_DB_ANON_ROLE: web_anon
+      PGRST_SERVER_PORT: 3000
+    ports:
+      - "3000:3000"
+
+volumes:
+  db-data:
