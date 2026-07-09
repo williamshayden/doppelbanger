@@ -1,0 +1,28 @@
+src/render.rs
+  s_d5230f3b49a1f4::t_e108ef65336f05 7-8,32,45-47
+src/lib.rs
+  s_d5230f3b49a1f4::t_a9f14e9213d06b 5,28
+tests/dsp_contract.rs
+  s_d5230f3b49a1f4::t_42bf365aca3644 49,89-92
+  s_d5230f3b49a1f4::t_0c4fdf6406d4d3 1-48,50-88,93-94,107-152
+  s_d5230f3b49a1f4::t_41a16e918fbc69 95-106
+src/dsp.rs
+  s_d5230f3b49a1f4::t_aef7543f5a5589 55
+  s_d5230f3b49a1f4::t_e108ef65336f05 1-54,56-163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "81d2493cb9971a721ea0c1d792bb30ca1b5b7cc8",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
