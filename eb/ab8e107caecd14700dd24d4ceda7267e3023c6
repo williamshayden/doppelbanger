@@ -1,0 +1,24 @@
+Cargo.toml
+  s_d5230f3b49a1f4::t_dbda34503f71cc 19-21
+src/benchmark.rs
+  s_d5230f3b49a1f4::t_1040a811680e49 335-348,350-353
+  s_d5230f3b49a1f4::t_0efabbe18e2162 349
+Cargo.lock
+  s_d5230f3b49a1f4::t_8c26a207810f0c 188,929-943
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ebab8e107caecd14700dd24d4ceda7267e3023c6",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
