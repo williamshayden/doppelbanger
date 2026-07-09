@@ -59,6 +59,27 @@ fn worker_once_reports_an_unreachable_api() {
     assert!(stderr.contains("http://127.0.0.1:1"));
 }
 
+#[test]
+fn benchmark_validates_the_corpus_path() {
+    let output = fixture_path("missing-benchmark.json");
+    let result = Command::new(env!("CARGO_BIN_EXE_doppelbanger"))
+        .args([
+            "benchmark",
+            "--corpus",
+            "/definitely/missing/doppelbanger-corpus",
+            "--output",
+            output.to_str().unwrap(),
+            "--full",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!result.status.success());
+    let stderr = String::from_utf8(result.stderr).unwrap();
+    assert!(stderr.contains("benchmark corpus directory does not exist"));
+    assert!(!stderr.contains("not implemented"));
+}
+
 fn fixture_path(name: &str) -> PathBuf {
     let dir =
         std::env::temp_dir().join(format!("doppelbanger-cli-contract-{}", std::process::id()));

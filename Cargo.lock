@@ -177,6 +177,7 @@ dependencies = [
  "biquad",
  "ebur128",
  "hound",
+ "libc",
  "rustfft",
  "serde",
  "serde_json",

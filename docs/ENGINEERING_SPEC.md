@@ -39,6 +39,7 @@ The scaffold-only `prepare` command and incoming generic `Tuning` fields are rem
 - Internal samples: interleaved `f32`, streamed in bounded blocks at the input sample rate.
 - Output: stereo IEEE 32-bit float WAV at the target sample rate and duration.
 - No Phase 1 resampling, dithering, limiting, compression, transient shaping, or stereo modification.
+- The `-1 dBTP` ceiling applies to processed output. Identity bypass remains sample-exact and reports a pre-existing hot source rather than changing it.
 - Corrupt, unsupported, mono, non-finite, or inconsistent streams fail with a field- and path-specific error.
 
 ## Analysis V1

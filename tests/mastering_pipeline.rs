@@ -83,6 +83,37 @@ fn generated_and_edited_plans_enforce_phase_one_bounds() {
     assert!(error.contains("-3..=3"));
 }
 
+#[test]
+fn malformed_pair_diff_returns_an_error_instead_of_panicking() {
+    let path = fixture_path("malformed-diff.wav");
+    write_signal(&path, 48_000, 4.0, sine(440.0, 0.25));
+    let analysis = analyze_track(&path).unwrap();
+    let mut diff = PairDiffV1::between(&analysis, &analysis).unwrap();
+    diff.spectral_relative_db.clear();
+
+    let error = generate_plan(&analysis, &analysis, &diff)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("9 spectral bands"));
+}
+
+#[test]
+fn identity_bypass_remains_an_exact_no_op_even_above_the_processing_ceiling() {
+    let input = fixture_path("hot-identity-input.wav");
+    let output = fixture_path("hot-identity-output.wav");
+    write_signal(&input, 48_000, 4.0, sine(440.0, 1.1));
+    let analysis = analyze_track(&input).unwrap();
+    let diff = PairDiffV1::between(&analysis, &analysis).unwrap();
+    let plan = generate_plan(&analysis, &analysis, &diff).unwrap();
+
+    let report = render_master(&input, &output, &plan).unwrap();
+
+    assert!(plan.bypass);
+    assert!(report.output_analysis.loudness.true_peak_dbtp > -0.9);
+    assert_eq!(decoded_samples(&input), decoded_samples(&output));
+}
+
 fn decoded_samples(path: &Path) -> Vec<f32> {
     let mut reader = AudioReader::open(path).unwrap();
     let mut samples = Vec::new();

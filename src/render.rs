@@ -91,14 +91,14 @@ pub fn render_master(
         || output_analysis.metadata.channels != target_analysis.metadata.channels
         || output_analysis.metadata.frame_count != target_analysis.metadata.frame_count
     {
-        return Err(render_error(
+        return Err(remove_failed_output(
             "verify",
             &output_path,
             "render changed sample rate, channel count, or duration",
         ));
     }
-    if output_analysis.loudness.true_peak_dbtp > plan.true_peak_ceiling_dbtp + 0.1 {
-        return Err(render_error(
+    if !plan.bypass && output_analysis.loudness.true_peak_dbtp > plan.true_peak_ceiling_dbtp + 0.1 {
+        return Err(remove_failed_output(
             "verify",
             &output_path,
             format!(
@@ -114,6 +114,22 @@ pub fn render_master(
         output_path: output_analysis.metadata.path.clone(),
         output_analysis,
     })
+}
+
+fn remove_failed_output(
+    operation: &'static str,
+    path: &Path,
+    error: impl std::fmt::Display,
+) -> DoppelbangerError {
+    let message = error.to_string();
+    match fs::remove_file(path) {
+        Ok(()) => render_error(operation, path, message),
+        Err(cleanup_error) => render_error(
+            operation,
+            path,
+            format!("{message}; additionally failed to remove unsafe output: {cleanup_error}"),
+        ),
+    }
 }
 
 struct StereoBiquad {

@@ -52,6 +52,26 @@ fn edited_plan_requires_a_parent_request_and_wav_output() {
     assert!(bad_output.to_string().contains("output must be a WAV"));
 }
 
+#[test]
+fn submission_records_the_decoded_format_instead_of_the_extension() {
+    let reference = fixture_path("content-is-wav.mp3");
+    let target = fixture_path("content-is-also-wav.mp3");
+    write_sine(&reference, 440.0, 0.5);
+    write_sine(&target, 440.0, 0.25);
+
+    let request = SubmitRequest::from_paths(
+        &reference,
+        &target,
+        fixture_path("content-output.wav"),
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.reference_format, doppelbanger::AudioFormat::Wav);
+    assert_eq!(request.target_format, doppelbanger::AudioFormat::Wav);
+}
+
 fn fixture_path(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "doppelbanger-request-contract-{}",

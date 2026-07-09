@@ -41,6 +41,12 @@ pub fn generate_plan(
     target: &TrackAnalysisV1,
     diff: &PairDiffV1,
 ) -> Result<MasteringPlanV1> {
+    if diff.spectral_relative_db.len() != 9 {
+        return Err(DoppelbangerError::InvalidPlan(format!(
+            "PairDiffV1 must contain 9 spectral bands, got {}",
+            diff.spectral_relative_db.len()
+        )));
+    }
     if reference.analyzer_version != target.analyzer_version {
         return Err(DoppelbangerError::InvalidPlan(format!(
             "analyzer version mismatch: reference={}, target={}",
@@ -144,7 +150,7 @@ pub fn validate_plan(plan: &MasteringPlanV1, target: &TrackAnalysisV1) -> Result
     }
 
     let safe_max = safe_max_gain(target, &plan.eq);
-    if plan.applied_gain_db > safe_max + 1e-9 {
+    if !plan.bypass && plan.applied_gain_db > safe_max + 1e-9 {
         return invalid(format!(
             "applied_gain_db={} exceeds conservative true-peak headroom {safe_max:.6}",
             plan.applied_gain_db

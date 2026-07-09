@@ -17,6 +17,7 @@ pub struct PipelineReportV1 {
     pub plan: MasteringPlanV1,
     pub render: RenderReportV1,
     pub after_diff: PairDiffV1,
+    pub report_path: String,
 }
 
 pub fn process_job(client: &ApiClient, job: &MasteringJob) -> Result<PipelineReportV1> {
@@ -63,6 +64,7 @@ fn process_job_inner(client: &ApiClient, job: &MasteringJob) -> Result<PipelineR
 
     let render = render_master(&job.target_path, &job.output_path, &plan)?;
     let after_diff = PairDiffV1::between(&reference_analysis, &render.output_analysis)?;
+    let report_path = job.output_path.with_extension("report.json");
     let report = PipelineReportV1 {
         schema_version: 1,
         request_id: job.id,
@@ -72,10 +74,47 @@ fn process_job_inner(client: &ApiClient, job: &MasteringJob) -> Result<PipelineR
         plan,
         render,
         after_diff,
+        report_path: report_path.to_string_lossy().into_owned(),
     };
+    write_report(&report_path, &report)?;
     client.insert_artifact(&job.id, &job.output_path, &report)?;
     client.update_request(&job.id, RequestStatus::Complete, None)?;
     Ok(report)
+}
+
+fn write_report(path: &Path, report: &PipelineReportV1) -> Result<()> {
+    let json = serde_json::to_string_pretty(report).map_err(|error| {
+        DoppelbangerError::Io(format!("failed to encode pipeline report: {error}"))
+    })?;
+    let temporary = temporary_path(path);
+    fs::write(&temporary, format!("{json}\n")).map_err(|error| {
+        DoppelbangerError::Io(format!(
+            "failed to write report {}: {error}",
+            temporary.display()
+        ))
+    })?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| {
+            DoppelbangerError::Io(format!(
+                "failed to replace report {}: {error}",
+                path.display()
+            ))
+        })?;
+    }
+    fs::rename(&temporary, path).map_err(|error| {
+        DoppelbangerError::Io(format!(
+            "failed to publish report {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn temporary_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("mastered.report.json");
+    path.with_file_name(format!(".{file_name}.part-{}", std::process::id()))
 }
 
 fn prepare_submitted_plan(
@@ -93,3 +132,5 @@ fn prepare_submitted_plan(
     validate_plan(&plan, target)?;
     Ok(plan)
 }
+use std::fs;
+use std::path::{Path, PathBuf};

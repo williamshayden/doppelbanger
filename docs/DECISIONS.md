@@ -123,7 +123,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Source:** [PRD summary](PRD.md#summary)
 - **Consequences:** DSP contracts must remain block-oriented and independent from database/UI state.
 - **Revisit trigger:** Start after the standalone pipeline passes AlbumDB and user-owned techno quality gates.
-- **GitHub:** Pending issue setup.
+- **GitHub:** [#5 Deferred: VST3 and AU wrappers with Ableton validation](https://github.com/williamshayden/doppelbanger/issues/5).
 
 ## PD-012: Reference-derived presets follow single-pair mastering
 - **Status:** `deferred`
@@ -134,7 +134,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Source:** [PRD assumptions](PRD.md#assumptions)
 - **Consequences:** Phase 1 plans are request-scoped JSON artifacts.
 - **Revisit trigger:** Start after at least five user-owned references produce stable, useful plans.
-- **GitHub:** Pending issue setup.
+- **GitHub:** [#6 Deferred: reusable reference-derived presets](https://github.com/williamshayden/doppelbanger/issues/6).
 
 ## PD-013: Browser workshop UI follows report stability
 - **Status:** `deferred`
@@ -145,7 +145,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Source:** [Engineering spec deferrals](ENGINEERING_SPEC.md#phase-1-deferrals)
 - **Consequences:** Manual evaluation uses generated files and structured checklists.
 - **Revisit trigger:** Start when `MasteringPlanV1` and render reports pass the fast AlbumDB suite.
-- **GitHub:** Pending issue setup.
+- **GitHub:** [#2 Deferred: browser workshop UI](https://github.com/williamshayden/doppelbanger/issues/2).
 
 ## PD-014: AlbumDB is the first paired evaluation corpus
 - **Status:** `accepted`
@@ -178,7 +178,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Source:** [Engineering spec phase exit](ENGINEERING_SPEC.md#phase-1-exit)
 - **Consequences:** Phase 1 includes a conservative processor and report, not only metrics.
 - **Revisit trigger:** None.
-- **GitHub:** Pending phase tracker.
+- **GitHub:** [#3 Phase 1: validate the first audible reference-mastering pass](https://github.com/williamshayden/doppelbanger/issues/3).
 
 ## PD-017: One API-backed product path
 - **Status:** `accepted`
@@ -222,7 +222,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Source:** [Engineering spec deferrals](ENGINEERING_SPEC.md#phase-1-deferrals)
 - **Consequences:** True-peak headroom may prevent full loudness matching.
 - **Revisit trigger:** Start after gain/EQ passes automated and manual AlbumDB gates.
-- **GitHub:** Pending issue setup.
+- **GitHub:** [#1 Deferred: compression and limiting stage](https://github.com/williamshayden/doppelbanger/issues/1).
 
 ## PD-021: Stereo and transient processing follow metric validation
 - **Status:** `deferred`
@@ -233,7 +233,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Source:** [Engineering spec analysis](ENGINEERING_SPEC.md#analysis-v1)
 - **Consequences:** Reports expose these differences for later processor design.
 - **Revisit trigger:** Start after metric conformance and repeated real-pair plausibility checks pass.
-- **GitHub:** Pending issue setup.
+- **GitHub:** [#4 Deferred: stereo and transient processing](https://github.com/williamshayden/doppelbanger/issues/4).
 
 ## PD-022: One-command packaging follows runtime proof
 - **Status:** `deferred`
@@ -244,7 +244,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Source:** [Engineering spec deferrals](ENGINEERING_SPEC.md#phase-1-deferrals)
 - **Consequences:** Phase 1 development uses Cargo and Docker Compose directly.
 - **Revisit trigger:** Start after clean Mac and Windows machines pass the API/worker pipeline contract.
-- **GitHub:** Pending issue setup.
+- **GitHub:** [#7 Deferred: one-command installation and Windows packaging](https://github.com/williamshayden/doppelbanger/issues/7).
 
 ## PD-023: MIT and public-source posture is provisional through Phase 1
 - **Status:** `accepted`

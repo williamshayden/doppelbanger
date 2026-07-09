@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use doppelbanger::{
     ApiClient, DoppelbangerError, EditablePlanFileV1, RequestStatus, SubmitRequest, process_job,
+    run_benchmark,
 };
 
 const DEFAULT_API_URL: &str = "http://localhost:3000";
@@ -24,9 +25,7 @@ fn run(args: Vec<String>) -> doppelbanger::Result<()> {
     match args.first().map(String::as_str) {
         Some("master") => master(&args[1..]),
         Some("worker") => worker(&args[1..]),
-        Some("benchmark") => Err(DoppelbangerError::InvalidRequest(
-            "benchmark corpus runner is not implemented yet".to_string(),
-        )),
+        Some("benchmark") => benchmark(&args[1..]),
         Some("-h" | "--help") | None => {
             print_usage();
             Ok(())
@@ -163,6 +162,55 @@ fn worker(args: &[String]) -> doppelbanger::Result<()> {
         if once {
             return Ok(());
         }
+    }
+}
+
+fn benchmark(args: &[String]) -> doppelbanger::Result<()> {
+    let mut corpus = None;
+    let mut output = None;
+    let mut full = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--corpus" => {
+                corpus = Some(PathBuf::from(argument_value(args, index, "--corpus")?));
+                index += 2;
+            }
+            "--output" => {
+                output = Some(PathBuf::from(argument_value(args, index, "--output")?));
+                index += 2;
+            }
+            "--full" => {
+                full = true;
+                index += 1;
+            }
+            flag => return Err(DoppelbangerError::UnexpectedArgument(flag.to_string())),
+        }
+    }
+
+    let corpus = corpus.ok_or(DoppelbangerError::MissingArgument("--corpus"))?;
+    let output = output.ok_or(DoppelbangerError::MissingArgument("--output"))?;
+    let report = run_benchmark(&corpus, &output, full)?;
+    println!(
+        "benchmarked {} pairs: tonal improvement {:.1}%, analysis {:.2}x, render {:.2}x, peak RSS {}",
+        report.summary.pair_count,
+        report.summary.median_tonal_improvement_percent,
+        report.summary.minimum_analysis_realtime_factor,
+        report.summary.minimum_render_realtime_factor,
+        report
+            .summary
+            .peak_rss_mib
+            .map(|value| format!("{value:.1} MiB"))
+            .unwrap_or_else(|| "unavailable".to_string())
+    );
+    println!("report {}", output.display());
+    if report.gates_passed {
+        Ok(())
+    } else {
+        Err(DoppelbangerError::Io(format!(
+            "benchmark gates failed: {:?}",
+            report.gates
+        )))
     }
 }
 

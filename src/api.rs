@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AudioFormat, DoppelbangerError, MasteringPlanV1, Result, TrackAnalysisV1};
+use crate::{
+    AudioFormat, AudioReader, DoppelbangerError, MasteringPlanV1, Result, TrackAnalysisV1,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -51,8 +53,8 @@ impl SubmitRequest {
         }
         let reference_path = canonical_input("reference", reference_path.as_ref())?;
         let target_path = canonical_input("target", target_path.as_ref())?;
-        let reference_format = AudioFormat::from_path(&reference_path)?;
-        let target_format = AudioFormat::from_path(&target_path)?;
+        let reference_format = AudioReader::open(&reference_path)?.info().format;
+        let target_format = AudioReader::open(&target_path)?.info().format;
         let output_path = absolute_output(output_path.as_ref())?;
         if !matches!(AudioFormat::from_path(&output_path), Ok(AudioFormat::Wav)) {
             return Err(DoppelbangerError::InvalidRequest(format!(

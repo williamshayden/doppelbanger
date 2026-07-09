@@ -1,6 +1,7 @@
 mod analysis;
 mod api;
 mod audio;
+mod benchmark;
 mod plan;
 mod render;
 mod worker;
@@ -19,6 +20,9 @@ pub use api::{
     SubmitRequest, TrackRole,
 };
 pub use audio::{AudioBlock, AudioReader, AudioStreamInfo};
+pub use benchmark::{
+    BenchmarkGatesV1, BenchmarkItemV1, BenchmarkReportV1, BenchmarkSummaryV1, run_benchmark,
+};
 pub use plan::{
     EqFilterKindV1, EqFilterV1, MasteringPlanV1, PROCESSOR_VERSION, TRUE_PEAK_CEILING_DBTP,
     generate_plan, validate_plan,
