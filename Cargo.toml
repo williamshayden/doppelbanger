@@ -16,3 +16,6 @@ sha2 = "0.10"
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "wav", "pcm"] }
 ureq = { version = "3.3", features = ["json"], default-features = false }
 uuid = { version = "1", features = ["serde"] }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
