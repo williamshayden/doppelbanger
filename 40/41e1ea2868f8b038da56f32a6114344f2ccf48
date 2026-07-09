@@ -1,0 +1,55 @@
+src/benchmark.rs
+  s_d5230f3b49a1f4::t_cf86c5288c17c7 2-3,9,17-32,299-305,313,315,318-320,326-355,358,371-384,440
+  s_d5230f3b49a1f4::t_42bf365aca3644 447-448
+  s_d5230f3b49a1f4::t_7539962d4a96b1 191-192,258-262,321-325,443-446,449-461,552
+  s_d5230f3b49a1f4::t_8eec81e5004334 5,11-14,38-39,65-80,120,123,137,167,169-173,175,179,204-205,276,279,359-370,385-439,441
+  s_d5230f3b49a1f4::t_8abddd3e32dc52 47-49,52-59,214-216,219-226
+  s_d5230f3b49a1f4::t_23f4a24e0f3059 199,229
+  s_d5230f3b49a1f4::t_daeb13f61fb0ef 442,533-551
+  s_d5230f3b49a1f4::t_b4bcb1c511ee29 306-310,312
+src/analysis.rs
+  s_d5230f3b49a1f4::t_b4bcb1c511ee29 391
+  s_d5230f3b49a1f4::t_8eec81e5004334 11
+src/lib.rs
+  s_d5230f3b49a1f4::t_8eec81e5004334 15-16,24-25
+tests/analysis_contract.rs
+  s_d5230f3b49a1f4::t_b4bcb1c511ee29 151
+  s_d5230f3b49a1f4::t_d7f29b2508576e 116-137,150,152,175-193,196
+  s_d5230f3b49a1f4::t_d9a0b725ee527d 153,194-195
+tests/mastering_pipeline.rs
+  s_d5230f3b49a1f4::t_454edf5f6f701c 87-114,172-181
+  s_60291210603516::t_895aa502f3f8a4 86,182
+tests/benchmark_contract.rs
+  s_d5230f3b49a1f4::t_d7f29b2508576e 81-109,142,186
+  s_d5230f3b49a1f4::t_7b433ad6cc3fd7 110-141
+  s_d5230f3b49a1f4::t_da923337c7f169 2-3,8,13-39,42,46,173-185
+  s_d5230f3b49a1f4::t_5aafc2fdabdc22 5,145,147-149
+  s_d5230f3b49a1f4::t_39fc34cfe62c86 47-54,56-57,73
+  s_d5230f3b49a1f4::t_8abddd3e32dc52 62-63
+  s_d5230f3b49a1f4::t_f9c1c327e3be27 64-72
+  s_d5230f3b49a1f4::t_a8b3b40445a141 143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4041e1ea2868f8b038da56f32a6114344f2ccf48",
+  "prompts": {},
+  "sessions": {
+    "s_60291210603516": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f48cd-aa30-73b3-8aa8-86069e89865a",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    },
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
