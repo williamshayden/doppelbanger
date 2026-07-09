@@ -1,0 +1,34 @@
+.github/ISSUE_TEMPLATE/proposal.yml
+  s_d5230f3b49a1f4::t_7fca4924033254 1-50
+.github/ISSUE_TEMPLATE/bug.yml
+  s_d5230f3b49a1f4::t_7fca4924033254 1-46
+docs/DECISIONS.md
+  s_d5230f3b49a1f4::t_7fca4924033254 1-280
+.github/ISSUE_TEMPLATE/config.yml
+  s_d5230f3b49a1f4::t_7fca4924033254 1-2
+tests/decision_docs.rs
+  s_d5230f3b49a1f4::t_9aca5d72003ba6 24-27,39-42,58-61,101-104
+  s_d5230f3b49a1f4::t_283e980127e21d 1-23,28-38,43-57,62-100,105-125
+AGENTS.md
+  s_d5230f3b49a1f4::t_7fca4924033254 6-8
+docs/ENGINEERING_SPEC.md
+  s_d5230f3b49a1f4::t_7fca4924033254 1,3,5,7-10,12,14,16-29,32,34,36-77,80-84,86-88,90,92-98,100,102
+.github/pull_request_template.md
+  s_d5230f3b49a1f4::t_7fca4924033254 1-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fe2a0e02531916dda859b746b4089341c75f9483",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
