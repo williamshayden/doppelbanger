@@ -1,0 +1,51 @@
+.gitignore
+  s_d5230f3b49a1f4::t_977734e243b2c4 1
+  s_d5230f3b49a1f4::t_3865a840f05e7d 2-4
+LICENSE
+  s_d5230f3b49a1f4::t_8d9950b1740548 1-21
+tests/request_contract.rs
+  s_d5230f3b49a1f4::t_20d38092a09382 12-19,36
+  s_d5230f3b49a1f4::t_d29b3eff6fd1e9 1-11,20-35,37-53
+tests/cli_prepare.rs
+  s_d5230f3b49a1f4::t_6f1f3d1d345dbe 1-50
+AGENTS.md
+  s_d5230f3b49a1f4::t_5e31de84fff5af 1-10
+Cargo.toml
+  s_d5230f3b49a1f4::t_78336437ea0424 7-8
+  s_d5230f3b49a1f4::t_977734e243b2c4 1-6
+src/main.rs
+  s_d5230f3b49a1f4::t_977734e243b2c4 7,99
+  s_d5230f3b49a1f4::t_d35a956d1a0e3a 1-6,8-98
+README.md
+  s_d5230f3b49a1f4::t_d46b5ced55a30e 1-68
+docs/ENGINEERING_SPEC.md
+  s_d5230f3b49a1f4::t_10c62ac0584268 1-65
+db/init/001_schema.sql
+  s_d5230f3b49a1f4::t_ebdb3eb61ee9db 1-48
+docs/PRD.md
+  s_d5230f3b49a1f4::t_ea66217017b244 1-50
+src/lib.rs
+  s_d5230f3b49a1f4::t_45b17ddfea77c1 1-9,20-24,29-200
+  s_d5230f3b49a1f4::t_20d38092a09382 10-19,25-28
+docker-compose.yml
+  s_d5230f3b49a1f4::t_a0cda44430aa93 3-35
+  s_d5230f3b49a1f4::t_39912c16714c19 1-2
+Cargo.lock
+  s_d5230f3b49a1f4::t_357cb7440ca1b0 1-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "befebd1dd5dea071d2696fb767996ac7c5bcef95",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
