@@ -1,0 +1,67 @@
+src/benchmark.rs
+  s_d5230f3b49a1f4::t_cf86c5288c17c7 2-3,9,17-32,301-307,315,317,320-322,328-357,360,373-386,444
+  s_d5230f3b49a1f4::t_42bf365aca3644 451-452
+  s_d5230f3b49a1f4::t_7539962d4a96b1 193-194,260-264,323-327,447-450,453-465,556
+  s_d5230f3b49a1f4::t_8eec81e5004334 5,11-14,38-39,65-71,74-82,122,125,139,169,171-175,177,181,206-207,278,281,361-372,387-390,393-396,401-405,407-443,445
+  s_d5230f3b49a1f4::t_8abddd3e32dc52 47-49,52-59,216-218,221-228
+  s_d5230f3b49a1f4::t_23f4a24e0f3059 201,231
+  s_d5230f3b49a1f4::t_daeb13f61fb0ef 446,537-555
+  s_d5230f3b49a1f4::t_b4bcb1c511ee29 308-312,314
+src/analysis.rs
+  s_d5230f3b49a1f4::t_b4bcb1c511ee29 391
+  s_d5230f3b49a1f4::t_8eec81e5004334 11
+src/lib.rs
+  s_d5230f3b49a1f4::t_8eec81e5004334 16-17,25-26
+  s_d5230f3b49a1f4::t_a9f14e9213d06b 5,28
+tests/analysis_contract.rs
+  s_d5230f3b49a1f4::t_b4bcb1c511ee29 151
+  s_d5230f3b49a1f4::t_d7f29b2508576e 116-137,150,152,175-193,196
+  s_d5230f3b49a1f4::t_d9a0b725ee527d 153,194-195
+tests/mastering_pipeline.rs
+  s_d5230f3b49a1f4::t_454edf5f6f701c 87-114,172-181
+  s_60291210603516::t_895aa502f3f8a4 86,182
+tests/benchmark_contract.rs
+  s_d5230f3b49a1f4::t_d7f29b2508576e 86-114,147,191
+  s_d5230f3b49a1f4::t_7b433ad6cc3fd7 115-146
+  s_d5230f3b49a1f4::t_da923337c7f169 2-3,8,13-39,42,46,178-190
+  s_d5230f3b49a1f4::t_5aafc2fdabdc22 5,150,152-154
+  s_d5230f3b49a1f4::t_39fc34cfe62c86 47-49,54,56-59,61-62,78
+  s_d5230f3b49a1f4::t_8abddd3e32dc52 67-68
+  s_d5230f3b49a1f4::t_f9c1c327e3be27 69-77
+  s_d5230f3b49a1f4::t_a8b3b40445a141 148
+src/dsp.rs
+  s_d5230f3b49a1f4::t_f034fbe5e91d6c 123-127,146-161
+  s_d5230f3b49a1f4::t_e108ef65336f05 1-54,56-122,128-145,162-181
+  s_d5230f3b49a1f4::t_aef7543f5a5589 55
+tests/dsp_contract.rs
+  s_d5230f3b49a1f4::t_42bf365aca3644 49,89-92
+  s_d5230f3b49a1f4::t_0c4fdf6406d4d3 1-48,50-88,93-94,136-181
+  s_d5230f3b49a1f4::t_41a16e918fbc69 95-106
+  s_d5230f3b49a1f4::t_746ccaffd4f589 107-135
+src/render.rs
+  s_d5230f3b49a1f4::t_e108ef65336f05 7-8,32,45-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e68ae1e117b5de8a45544bbd5b1395eea147d756",
+  "prompts": {},
+  "sessions": {
+    "s_60291210603516": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f48cd-aa30-73b3-8aa8-86069e89865a",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    },
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
