@@ -1,0 +1,41 @@
+docs/ENGINEERING_SPEC.md
+  s_d5230f3b49a1f4::t_dccf56140cdfbc 18-20,22,30
+  s_d5230f3b49a1f4::t_f18ab17f6be289 1,5,8-13,16,25-27,31-38,40-52,54,56-64,66,70-84,97,99,101,105-106,108,112,114,121,125,129-131,133,136-142,144-151,153-154,156-170,175-178
+  s_d5230f3b49a1f4::t_6f3e5f1f77daee 39,68-69,110,117-118,143,152,155,174
+  s_d5230f3b49a1f4::t_741f332a2550bc 17
+  s_d5230f3b49a1f4::t_34239459611452 67
+docs/PLUGIN_ARCHITECTURE.md
+  s_d5230f3b49a1f4::t_3934f259d42dc3 46-53
+  s_d5230f3b49a1f4::t_6f3e5f1f77daee 33,58,72,118,127,141,150,152
+  s_d5230f3b49a1f4::t_aef7543f5a5589 123
+  s_d5230f3b49a1f4::t_3a1c375eb900e6 1-32,34-45,54-57,59-71,73-117,119-122,124-126,128-140,142-149,151,153-155
+docs/DECISIONS.md
+  s_d5230f3b49a1f4::t_f4af132dbabe05 313,316-317
+  s_d5230f3b49a1f4::t_dccf56140cdfbc 186,195,318,330-340
+  s_d5230f3b49a1f4::t_da4540407dd0a0 19,28,119,128,220,229,276,285-312,314-315,319-329
+README.md
+  s_d5230f3b49a1f4::t_8e9ffbc88ffa68 3,5,7-10,12-25,29-30,33-35,37,47,53,58,62,64,66,68,70,72-76,78,88,93,96,107,111
+  s_d5230f3b49a1f4::t_dccf56140cdfbc 11,39
+docs/PRD.md
+  s_d5230f3b49a1f4::t_58347779ba80a0 1,9,11-15,18-21,23-29,32-34,38-64,68-70,72,74,76,82-84
+  s_d5230f3b49a1f4::t_dccf56140cdfbc 7,75
+  s_d5230f3b49a1f4::t_6f3e5f1f77daee 5,16-17,22,30-31,65-67,77,81
+tests/decision_docs.rs
+  s_d5230f3b49a1f4::t_dccf56140cdfbc 21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "72c6e6df8b69f0a5560578d9dc6ddd574bf177f3",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
