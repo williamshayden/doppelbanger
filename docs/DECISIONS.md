@@ -16,7 +16,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **GitHub:** None.
 
 ## PD-002: CLI and local API are the first product surface
-- **Status:** `accepted`
+- **Status:** `superseded`
 - **Date:** 2026-06-26
 - **Area:** product
 - **Decision:** The first shippable surface is a CLI backed by a local PostgREST API.
@@ -25,6 +25,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Consequences:** Desktop and plugin wrappers consume the same contracts later.
 - **Revisit trigger:** None.
 - **GitHub:** None.
+- **Superseded by:** PD-026
 
 ## PD-003: Postgres and PostgREST own application state
 - **Status:** `accepted`
@@ -115,7 +116,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **GitHub:** None.
 
 ## PD-011: VST3 and AU wrappers follow the standalone pipeline
-- **Status:** `deferred`
+- **Status:** `superseded`
 - **Date:** 2026-06-26
 - **Area:** plugin
 - **Decision:** VST3/AU and Ableton validation do not begin in Phase 1.
@@ -124,6 +125,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Consequences:** DSP contracts must remain block-oriented and independent from database/UI state.
 - **Revisit trigger:** Start after the standalone pipeline passes AlbumDB and user-owned techno quality gates.
 - **GitHub:** [#5 Deferred: VST3 and AU wrappers with Ableton validation](https://github.com/williamshayden/doppelbanger/issues/5).
+- **Superseded by:** PD-026
 
 ## PD-012: Reference-derived presets follow single-pair mastering
 - **Status:** `deferred`
@@ -181,7 +183,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **GitHub:** [#3 Phase 1: validate the first audible reference-mastering pass](https://github.com/williamshayden/doppelbanger/issues/3).
 
 ## PD-017: One API-backed product path
-- **Status:** `accepted`
+- **Status:** `superseded`
 - **Date:** 2026-07-09
 - **Area:** architecture
 - **Decision:** The CLI submits and tracks work through PostgREST while a native worker runs DSP.
@@ -190,6 +192,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Consequences:** Pure library calls are test seams, not a second product mode.
 - **Revisit trigger:** None.
 - **GitHub:** None.
+- **Superseded by:** PD-030
 
 ## PD-018: Phase 1 processing is safe gain and broad EQ
 - **Status:** `accepted`
@@ -214,7 +217,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **GitHub:** None.
 
 ## PD-020: Dynamics and limiting follow the safe linear pass
-- **Status:** `deferred`
+- **Status:** `superseded`
 - **Date:** 2026-07-09
 - **Area:** dsp
 - **Decision:** Compression and limiting are excluded from Phase 1.
@@ -223,6 +226,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Consequences:** True-peak headroom may prevent full loudness matching.
 - **Revisit trigger:** Start after gain/EQ passes automated and manual AlbumDB gates.
 - **GitHub:** [#1 Deferred: compression and limiting stage](https://github.com/williamshayden/doppelbanger/issues/1).
+- **Superseded by:** PD-029
 
 ## PD-021: Stereo and transient processing follow metric validation
 - **Status:** `deferred`
@@ -269,7 +273,7 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **GitHub:** None.
 
 ## PD-025: Agent instructions and tests before custom skills or hooks
-- **Status:** `deferred`
+- **Status:** `superseded`
 - **Date:** 2026-07-09
 - **Area:** developer-experience
 - **Decision:** Use `AGENTS.md`, documentation tests, and a PR checklist; do not add a repo-local Codex skill or commit hook yet.
@@ -277,4 +281,60 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Source:** [Engineering spec phase exit](ENGINEERING_SPEC.md#phase-1-exit)
 - **Consequences:** A read-only decision-scribe subagent may propose updates, but root agents approve and write them.
 - **Revisit trigger:** Reconsider a tested user-local skill after two independent agent runs violate the workflow despite current instructions and checks.
+- **GitHub:** None.
+- **Superseded by:** PD-028
+
+## PD-026: VST3 is the primary product surface
+- **Status:** `accepted`
+- **Date:** 2026-07-09
+- **Area:** product
+- **Decision:** Build doppelbanger as a VST3-first Ableton/DAW plugin. The plugin captures dry target audio, obtains a plan through the local service, embeds that plan in DAW state, and applies it through the shared processor.
+- **Rationale:** Plugin work must advance the actual mastering workflow instead of creating a disposable browser or standalone product path.
+- **Source:** [PRD summary](PRD.md#summary)
+- **Consequences:** CLI and offline rendering remain validation adapters; PostgREST is required for new analysis but never for active callback processing; AU follows as another wrapper.
+- **Revisit trigger:** Revisit the first format only if VST3 cannot satisfy the documented Ableton workflow on both target operating systems.
+- **GitHub:** [#5 VST3 and AU wrappers with Ableton validation](https://github.com/williamshayden/doppelbanger/issues/5).
+
+## PD-027: iPlug2 wraps the Rust DSP core
+- **Status:** `accepted`
+- **Date:** 2026-07-09
+- **Area:** plugin
+- **Decision:** Use a thin iPlug2 C++ host wrapper and a versioned C ABI around the Rust `MasteringProcessor`; pin iPlug2 to a reviewed commit.
+- **Rationale:** iPlug2 provides permissively licensed VST3 and future AU integration while keeping existing Rust analysis, plans, and DSP as the source of truth.
+- **Source:** [Plugin architecture chosen direction](PLUGIN_ARCHITECTURE.md#chosen-direction)
+- **Consequences:** The build uses Cargo plus CMake; the ABI must contain panic/exception boundaries, fixed-layout types, planar host-buffer adaptation, and parity tests.
+- **Revisit trigger:** Revisit after a bounded plugin-shell implementation proves iPlug2 blocks required host behavior or makes distribution materially less maintainable than direct VST3 integration.
+- **GitHub:** [#5 VST3 and AU wrappers with Ableton validation](https://github.com/williamshayden/doppelbanger/issues/5).
+
+## PD-028: Repository workflow is test- and evidence-driven
+- **Status:** `accepted`
+- **Date:** 2026-07-09
+- **Area:** developer-experience
+- **Decision:** Maintain contributor, validation, plugin-architecture, decision, and agent instructions as repository contracts; use stacked PRs, explicit multi-agent review, and local-first CI/test enforcement.
+- **Rationale:** Agent-assisted development is safe only when scope, quality, performance, evidence, and review expectations are reproducible and tool-independent.
+- **Source:** [Contributing guide](../CONTRIBUTING.md)
+- **Consequences:** Nontrivial changes use tests first, named validation tiers, evidence provenance, two review passes, and PRs normally limited to 400 changed lines. Project-specific policy stays in repository docs; hooks remain advisory and do not replace tests or spawn work implicitly.
+- **Revisit trigger:** Add a new hook or specialized skill only after a repeated workflow failure has a mechanical, pressure-testable prevention and a baseline agent fails the pressure scenario without it.
+- **GitHub:** None.
+
+## PD-029: True-peak safety limiting is part of the plugin MVP
+- **Status:** `accepted`
+- **Date:** 2026-07-09
+- **Area:** dsp
+- **Decision:** Add a transparent true-peak safety limiter after the linear plugin baseline; keep musical compression deferred until limiter-only evidence leaves a repeatable dynamics gap.
+- **Rationale:** Static file headroom cannot guarantee peak safety for a changing live DAW stream, while compression is not required to prove the first safe plugin path.
+- **Source:** [Engineering spec initial processor](ENGINEERING_SPEC.md#initial-processor)
+- **Consequences:** Limiter latency is fixed at no more than 5 ms and must equal host-reported latency; limiter acceptance requires conformance, artifact, ablation, callback, and listening evidence.
+- **Revisit trigger:** Add compression only after multiple real pairs show a documented dynamics-shape failure that limiter-only processing does not solve.
+- **GitHub:** [#1 Compression and limiting stage](https://github.com/williamshayden/doppelbanger/issues/1).
+
+## PD-030: The MVP has no public CLI
+- **Status:** `accepted`
+- **Date:** 2026-07-09
+- **Area:** product
+- **Decision:** Ship the VST3 plugin and managed companion runtime without a supported command-line mastering interface.
+- **Rationale:** A public CLI would add installation, documentation, compatibility, and support surface without improving the intended Ableton workflow.
+- **Source:** [PRD summary](PRD.md#summary)
+- **Consequences:** Existing `master`, `worker`, and `benchmark` commands are temporary repository harnesses; reusable orchestration moves to `cargo xtask` or test binaries, while the companion worker remains an internal service process.
+- **Revisit trigger:** Add a public CLI only after a concrete headless or batch user workflow has independent demand and can reuse the exact plugin/service contracts.
 - **GitHub:** None.
