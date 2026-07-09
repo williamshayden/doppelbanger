@@ -1,0 +1,50 @@
+name: Product or engineering proposal
+description: Propose a scoped decision or implementation outcome
+title: "[Proposal]: "
+labels: ["decision", "status:needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep this proposal public and evidence-based. Do not include proprietary audio, unreleased music, credentials, private business information, or security vulnerability details.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and user outcome
+      description: Describe the concrete problem and who benefits.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and current contract
+      description: Link relevant decision IDs, PRD/spec sections, tests, measurements, or user reports.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed decision
+      description: State one bounded decision and its consequences.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: true
+  - type: textarea
+    id: revisit
+    attributes:
+      label: Revisit trigger
+      description: If deferred, name the measurable condition that should reopen this proposal.
+    validations:
+      required: true
+  - type: checkboxes
+    id: public-data
+    attributes:
+      label: Public data confirmation
+      options:
+        - label: I have not included proprietary audio, credentials, or private vulnerability details.
+          required: true
