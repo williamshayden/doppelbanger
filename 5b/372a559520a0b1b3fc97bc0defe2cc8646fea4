@@ -1,0 +1,19 @@
+tests/audio_reader.rs
+  s_d5230f3b49a1f4::t_212b56992be27c 63,73-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5b372a559520a0b1b3fc97bc0defe2cc8646fea4",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
