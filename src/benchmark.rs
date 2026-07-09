@@ -530,7 +530,25 @@ fn peak_rss_mib() -> Option<f64> {
     return Some(maximum / 1024.0);
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn peak_rss_mib() -> Option<f64> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: GetCurrentProcess returns a valid pseudo-handle and counters points to a
+    // correctly sized writable PROCESS_MEMORY_COUNTERS value for the duration of the call.
+    let result =
+        unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, counters.cb) };
+    (result != 0).then_some(counters.PeakWorkingSetSize as f64 / 1024.0 / 1024.0)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn peak_rss_mib() -> Option<f64> {
     None
 }
