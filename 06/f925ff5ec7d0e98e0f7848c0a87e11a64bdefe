@@ -1,0 +1,91 @@
+tests/api_integration.rs
+  s_d5230f3b49a1f4::t_f807ca91faa71b 41-56,61-64,69-73
+  s_d5230f3b49a1f4::t_3b7ab42f9576ca 57-60,65-68
+  s_d5230f3b49a1f4::t_2cbb8df1aa71a1 37
+  s_d5230f3b49a1f4::t_e7e05d534ba235 80-81,85-88
+  s_d5230f3b49a1f4::t_d886169616be85 74-79,82-84,89-101
+Cargo.toml
+  s_d5230f3b49a1f4::t_c71058498cfcfb 11
+  s_d5230f3b49a1f4::t_8a5f12edb1f0ac 5
+tests/corpus_prepare.rs
+  s_d5230f3b49a1f4::t_f2d047011a206e 38-42,44-45
+  s_d5230f3b49a1f4::t_f545ea9733c551 1-37,43,46-76
+.gitignore
+  s_d5230f3b49a1f4::t_6133128c8eabbc 6
+corpus/albumdb/manifest.json
+  s_d5230f3b49a1f4::t_6133128c8eabbc 1-40
+scripts/fetch_albumdb.sh
+  s_d5230f3b49a1f4::t_1727be73c0a2f6 29,34-36,38-44,47
+  s_d5230f3b49a1f4::t_6133128c8eabbc 1-28,30-33,37,45-46,48-67
+docs/AUDITION.md
+  s_d5230f3b49a1f4::t_81b5066c500948 1-30
+README.md
+  s_d5230f3b49a1f4::t_81b5066c500948 3,5,9-15,19-20,22,25,28,31,34-37,40-46,49-53,56,58-62,64-72,75,77-102,104,106,108
+  s_d5230f3b49a1f4::t_8a5f12edb1f0ac 63
+  s_d5230f3b49a1f4::t_5d7a8401632200 7-8
+  s_d5230f3b49a1f4::t_b193f722a650c6 6
+tests/request_contract.rs
+  s_d5230f3b49a1f4::t_08cb7a477ae060 55-74
+src/render.rs
+  s_d5230f3b49a1f4::t_3cb34220be00c7 100
+  s_d5230f3b49a1f4::t_1727be73c0a2f6 94,101,119-132
+  s_d5230f3b49a1f4::t_32c31b16d16696 133-134
+docs/ENGINEERING_SPEC.md
+  s_d5230f3b49a1f4::t_1727be73c0a2f6 42
+src/plan.rs
+  s_d5230f3b49a1f4::t_1727be73c0a2f6 44-49
+  s_d5230f3b49a1f4::t_421540f45eb182 153
+src/bin/prepare_albumdb.rs
+  s_d5230f3b49a1f4::t_1727be73c0a2f6 80,105-124
+  s_d5230f3b49a1f4::t_9b56f9c99f7786 1-49,54-79,81-104,125-201,206-246,255-264,268-299
+  s_d5230f3b49a1f4::t_f2d047011a206e 50-53,202-205,247-254,265-267
+src/benchmark.rs
+  s_d5230f3b49a1f4::t_f2d047011a206e 115-118,125-128,186,238-241
+  s_d5230f3b49a1f4::t_192a270940a5e0 1-114,119-124,129-185,187-237,242-273,275-338
+  s_d5230f3b49a1f4::t_fa446cbd53e84d 274
+tests/benchmark_contract.rs
+  s_d5230f3b49a1f4::t_78cb240c07f496 25,29
+  s_d5230f3b49a1f4::t_5c4e304a0c7fca 1-24,26,28,30-51,54-58
+  s_d5230f3b49a1f4::t_f2d047011a206e 27,52-53
+src/lib.rs
+  s_d5230f3b49a1f4::t_192a270940a5e0 4,23-25
+tests/cli_contract.rs
+  s_d5230f3b49a1f4::t_a1c87ec3a70c68 62-82
+src/main.rs
+  s_d5230f3b49a1f4::t_33f437ecf9ed79 10,28,168-214
+  s_d5230f3b49a1f4::t_90de6a5984a928 215-216
+tests/docs_current.rs
+  s_d5230f3b49a1f4::t_3c2141b0c45ad5 1-28
+src/worker.rs
+  s_d5230f3b49a1f4::t_9f734916b17cd8 20,67,77,79,85-119,135-136
+src/api.rs
+  s_d5230f3b49a1f4::t_1727be73c0a2f6 8-10,56-57
+docker-compose.yml
+  s_d5230f3b49a1f4::t_1727be73c0a2f6 22
+docs/DECISIONS.md
+  s_d5230f3b49a1f4::t_7a6bdf8be60ac3 126,137,148,181,225,236,247
+tests/mastering_pipeline.rs
+  s_d5230f3b49a1f4::t_08cb7a477ae060 86-116
+tests/corpus_manifest.rs
+  s_d5230f3b49a1f4::t_08cb7a477ae060 27,29-31
+  s_d5230f3b49a1f4::t_59e0e7af374037 1-8,12-17,22-26,28,32
+  s_d5230f3b49a1f4::t_02eace464360de 9-11,18-21
+Cargo.lock
+  s_d5230f3b49a1f4::t_7d31be90a2a601 180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "06f925ff5ec7d0e98e0f7848c0a87e11a64bdefe",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
