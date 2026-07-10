@@ -84,6 +84,35 @@ fn generated_and_edited_plans_enforce_phase_one_bounds() {
 }
 
 #[test]
+fn generated_eq_reduces_error_across_the_three_processor_regions() {
+    let reference = fixture_path("eq-reference.wav");
+    let target = fixture_path("eq-target.wav");
+    let output = fixture_path("eq-output.wav");
+    write_signal(&reference, 48_000, 4.0, |frame, sample_rate| {
+        sine_sample(frame, sample_rate, 80.0, 0.24)
+            + sine_sample(frame, sample_rate, 1_000.0, 0.08)
+            + sine_sample(frame, sample_rate, 8_000.0, 0.24)
+    });
+    write_signal(&target, 48_000, 4.0, |frame, sample_rate| {
+        sine_sample(frame, sample_rate, 80.0, 0.08)
+            + sine_sample(frame, sample_rate, 1_000.0, 0.24)
+            + sine_sample(frame, sample_rate, 8_000.0, 0.08)
+    });
+
+    let reference_analysis = analyze_track(&reference).unwrap();
+    let target_analysis = analyze_track(&target).unwrap();
+    let before = PairDiffV1::between(&reference_analysis, &target_analysis).unwrap();
+    let plan = generate_plan(&reference_analysis, &target_analysis, &before).unwrap();
+    let report = render_master(&target, &output, &plan).unwrap();
+    let after = PairDiffV1::between(&reference_analysis, &report.output_analysis).unwrap();
+
+    assert!(plan.eq[0].gain_db > 0.0);
+    assert!(plan.eq[1].gain_db < 0.0);
+    assert!(plan.eq[2].gain_db > 0.0);
+    assert!(three_region_error(&after) < three_region_error(&before));
+}
+
+#[test]
 fn malformed_pair_diff_returns_an_error_instead_of_panicking() {
     let path = fixture_path("malformed-diff.wav");
     write_signal(&path, 48_000, 4.0, sine(440.0, 0.25));
@@ -138,6 +167,17 @@ fn sine(frequency_hz: f32, amplitude: f32) -> impl Fn(usize, u32) -> f32 {
 
 fn sine_sample(frame: usize, sample_rate: u32, frequency_hz: f32, amplitude: f32) -> f32 {
     amplitude * (std::f32::consts::TAU * frequency_hz * frame as f32 / sample_rate as f32).sin()
+}
+
+fn three_region_error(diff: &PairDiffV1) -> f64 {
+    [
+        &diff.spectral_relative_db[0..3],
+        &diff.spectral_relative_db[3..7],
+        &diff.spectral_relative_db[7..9],
+    ]
+    .into_iter()
+    .map(|region| region.iter().map(|value| value.abs()).sum::<f64>() / region.len() as f64)
+    .sum()
 }
 
 fn write_signal(
