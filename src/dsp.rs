@@ -45,28 +45,74 @@ impl MasteringProcessor {
         }
 
         for frame in samples.chunks_exact_mut(2) {
-            for filter in &mut self.filters {
-                frame[0] = filter.left.run(frame[0]);
-                frame[1] = filter.right.run(frame[1]);
-            }
-            frame[0] *= self.gain;
-            frame[1] *= self.gain;
-            if !frame[0].is_finite() || !frame[1].is_finite() {
-                samples.fill(0.0);
-                return Err(ProcessError::NonFiniteOutput);
+            match self.process_frame(frame[0], frame[1]) {
+                Some((left, right)) => {
+                    frame[0] = left;
+                    frame[1] = right;
+                }
+                None => {
+                    samples.fill(0.0);
+                    return Err(ProcessError::NonFiniteOutput);
+                }
             }
         }
         Ok(())
     }
 
+    pub fn process_planar(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) -> std::result::Result<(), ProcessError> {
+        if left.len() != right.len() {
+            return Err(ProcessError::ChannelLengthMismatch);
+        }
+        if self.bypass {
+            return Ok(());
+        }
+
+        for index in 0..left.len() {
+            match self.process_frame(left[index], right[index]) {
+                Some((processed_left, processed_right)) => {
+                    left[index] = processed_left;
+                    right[index] = processed_right;
+                }
+                None => {
+                    left.fill(0.0);
+                    right.fill(0.0);
+                    return Err(ProcessError::NonFiniteOutput);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        for filter in &mut self.filters {
+            filter.left.reset_state();
+            filter.right.reset_state();
+        }
+    }
+
     pub const fn latency_samples(&self) -> u32 {
         0
+    }
+
+    fn process_frame(&mut self, mut left: f32, mut right: f32) -> Option<(f32, f32)> {
+        for filter in &mut self.filters {
+            left = filter.left.run(left);
+            right = filter.right.run(right);
+        }
+        left *= self.gain;
+        right *= self.gain;
+        (left.is_finite() && right.is_finite()).then_some((left, right))
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProcessError {
     OddSampleCount,
+    ChannelLengthMismatch,
     NonFiniteOutput,
 }
 
@@ -75,6 +121,9 @@ impl fmt::Display for ProcessError {
         match self {
             Self::OddSampleCount => {
                 formatter.write_str("stereo interleaved buffers require an even sample count")
+            }
+            Self::ChannelLengthMismatch => {
+                formatter.write_str("planar stereo channels require equal frame counts")
             }
             Self::NonFiniteOutput => formatter.write_str("processor produced a non-finite sample"),
         }
