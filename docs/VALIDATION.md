@@ -34,9 +34,10 @@ Runs on every DSP or plan change:
 cargo test --test dsp_contract
 cargo test --test analysis_contract
 cargo test --test mastering_pipeline
+bash scripts/test_native_ffi.sh
 ```
 
-Coverage includes exact bypass, filter direction, bounds, block partition invariance, anti-phase energy, malformed input, finite output, and zero callback allocation. Tests use generated signals with known frequencies and levels so each assertion has a specific physical meaning.
+Coverage includes exact bypass, filter direction, bounds, block partition invariance, anti-phase energy, malformed input, finite output, zero callback allocation/deallocation, fixed ABI layout, and native C/C++ compile-link-run behavior. Tests use generated signals with known frequencies and levels so each assertion has a specific physical meaning.
 
 ### Tier 2: API And Pipeline Integration
 
