@@ -18,7 +18,7 @@ const REQUIRED_FIELDS: [&str; 9] = [
 fn decision_ledger_is_complete_and_machine_checkable() {
     let ledger = fs::read_to_string("docs/DECISIONS.md").expect("docs/DECISIONS.md must exist");
     let records = parse_records(&ledger);
-    let expected: BTreeSet<String> = (1..=25).map(|id| format!("PD-{id:03}")).collect();
+    let expected: BTreeSet<String> = (1..=30).map(|id| format!("PD-{id:03}")).collect();
     let actual: BTreeSet<String> = records.keys().cloned().collect();
 
     assert_eq!(

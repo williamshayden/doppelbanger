@@ -1,20 +1,42 @@
 # doppelbanger
 
-Local-first reference mastering for stereo music. doppelbanger analyzes a reference and target, generates a conservative broad-EQ and gain plan, renders a 32-bit float WAV, and saves measurable before/after evidence.
+Local-first reference mastering for Ableton Live and other DAWs.
 
-Status: development prototype. The first audible API-backed path works on macOS; AlbumDB quality tuning, Windows validation, packaging, UI, and plugin formats are not complete.
+doppelbanger is building toward a VST3 plugin for macOS and Windows. The plugin will capture dry target audio from the DAW, compare it with a selected reference master through a local analysis service, embed an editable plan in the DAW project, and process host audio through one shared real-time-safe Rust DSP core.
 
-The public commands are `doppelbanger master`, `doppelbanger worker`, and `doppelbanger benchmark`.
+## Status
+
+Early development. The repository currently contains deterministic analysis, plan generation, an API-backed worker, an offline validation renderer, corpus benchmarks, and the first allocation-free block processor. The iPlug2 VST3 wrapper, host UI, target-capture queue, safety limiter, Windows validation, and release packaging are not implemented yet.
+
+There is no public CLI in the MVP. The current source binary is a temporary developer and evidence harness and has no compatibility promise.
+
+## Product Path
+
+```text
+plugin editor -> local PostgREST API -> Postgres job -> native worker
+              <- analysis + versioned plan
+
+DAW callback -> shared Rust MasteringProcessor -> host output
+benchmark    -> shared Rust MasteringProcessor -> measured WAV
+```
+
+Postgres/PostgREST owns durable analysis and plan state. The filesystem owns audio artifacts. The plugin stores the executable plan in DAW project state, so an existing project keeps processing when the local service is stopped. No API, database, file, allocation, or lock is permitted in the audio callback.
+
+See [the PRD](docs/PRD.md), [engineering spec](docs/ENGINEERING_SPEC.md), [plugin architecture](docs/PLUGIN_ARCHITECTURE.md), and [validation contract](docs/VALIDATION.md).
 
 ## Requirements
 
+Current development requires:
+
 - Rust toolchain
 - Docker with Compose
-- Stereo MP3 or WAV inputs
+- stereo MP3 or WAV test inputs
 
-AlbumDB setup additionally needs `curl`, `unzip`, roughly 5.3 GB of download space, and space for extracted audio and renders.
+AlbumDB setup additionally needs `curl`, `unzip`, roughly 5.3 GB of download space, and space for extracted audio and renders. Future plugin work also requires CMake, platform build tools, and the pinned iPlug2 dependency.
 
-## Quick Start
+## Current Developer Proof
+
+The current source tree temporarily exposes `doppelbanger master`, `doppelbanger worker`, and `doppelbanger benchmark` for automation and validation. These are not installed product interfaces and will move behind repository tooling as the plugin path takes over.
 
 Start Postgres and PostgREST:
 
@@ -22,47 +44,38 @@ Start Postgres and PostgREST:
 docker compose up -d --wait
 ```
 
-Run the native worker in one terminal:
+Run the native worker:
 
 ```bash
 cargo run --bin doppelbanger -- worker
 ```
 
-Submit and wait for a master in another terminal:
+Submit a reference and premaster file from another terminal:
 
 ```bash
 cargo run --bin doppelbanger -- master \
   --reference /absolute/path/reference.wav \
-  --target /absolute/path/target.wav \
+  --target /absolute/path/premaster.wav \
   --output /absolute/path/mastered.wav
 ```
 
-A successful run creates:
+A successful developer run creates:
 
-- `mastered.wav`: stereo 32-bit float output at the target sample rate and duration;
+- `mastered.wav`: stereo 32-bit float output;
 - `mastered.report.json`: analyses, before/after differences, applied plan, and output measurements;
-- `mastered.plan.json`: editable plan envelope linked to the completed request.
+- `mastered.plan.json`: the versioned editable plan.
 
-Edit only plan gains within their documented bounds, then submit a linked rerun:
+The future VST3 controller will request the same plan through the same API. Offline rendering already uses the shared `MasteringProcessor` that will sit behind the plugin ABI.
 
-```bash
-cargo run --bin doppelbanger -- master \
-  --reference /absolute/path/reference.wav \
-  --target /absolute/path/target.wav \
-  --output /absolute/path/mastered-v2.wav \
-  --plan /absolute/path/mastered.plan.json
-```
+## Current Processing Baseline
 
-Stop the local services with `docker compose down`. Use `docker compose down -v` only when local doppelbanger state should be deleted.
+- Measures LUFS, loudness range, short-term loudness, true/sample peak, PLR, nine spectral bands, stereo correlation and M/S energy, transients, clipping, DC, and non-finite samples.
+- Applies a low shelf at 120 Hz, broad bell at 1 kHz, high shelf at 6 kHz, and true-peak-constrained gain.
+- Constrains EQ to `-3..=3 dB` and gain to `-12..=12 dB`.
+- Preserves identity as an exact decoded no-op.
+- Processes arbitrary interleaved blocks without allocating and produces block-partition-invariant output.
 
-## Processing Contract
-
-- Decodes stereo MP3 and WAV by content into bounded interleaved `f32` blocks.
-- Measures loudness, true/sample peak, dynamics, nine spectral bands, stereo correlation and M/S energy, transients, clipping, DC, and non-finite samples.
-- Applies only low shelf at 120 Hz, broad bell at 1 kHz, high shelf at 6 kHz, and true-peak-constrained gain.
-- Constrains EQ to `-3..=3 dB`, gain to `-12..=12 dB`, and processed output true peak to `-1 dBTP` with `0.1 dB` measurement tolerance. Identity bypass remains sample-exact and reports pre-existing overs.
-- Bypasses identical reference/target WAV audio and preserves decoded samples exactly.
-- Does not apply limiting, compression, stereo modification, transient shaping, resampling, or dithering in this phase.
+This linear stage is the measurable baseline. A transparent, fixed-latency true-peak safety limiter is required before the first release-ready plugin. Musical compression follows only if limiter-only evidence leaves a repeatable gap.
 
 ## AlbumDB Benchmark
 
@@ -72,37 +85,27 @@ The source manifest is [corpus/albumdb/manifest.json](corpus/albumdb/manifest.js
 ./scripts/fetch_albumdb.sh
 ```
 
-Run the fast suite (songs 01, 04, and 10):
+Run the fast suite on songs 01, 04, and 10:
 
 ```bash
 cargo run --release --bin doppelbanger -- benchmark \
   --corpus var/albumdb/pairs \
-  --output var/albumdb/fast-benchmark.json
+  --output var/validation/albumdb-fast.json
 ```
 
-Add `--full` for all prepared pairs. The command records per-pair quality and performance evidence and exits nonzero when a hard gate fails. See [docs/AUDITION.md](docs/AUDITION.md) for the Ableton review gate.
+Add `--full` for all ten pairs. Generated tones are unit fixtures only; they are not mastering-quality evidence. AlbumDB and private techno pairs provide the real-audio tiers described in [docs/VALIDATION.md](docs/VALIDATION.md).
 
 ## Development
 
 ```bash
 cargo fmt --all -- --check
 cargo test
-cargo test --test api_integration -- --ignored
 cargo clippy --all-targets -- -D warnings
 docker compose config
 ```
 
-The ignored integration test requires the Compose runtime. Product decisions live in [docs/DECISIONS.md](docs/DECISIONS.md); the current engineering contract is [docs/ENGINEERING_SPEC.md](docs/ENGINEERING_SPEC.md). Audio and generated artifacts under `var/` are intentionally excluded from git.
-
-## Architecture
-
-```text
-CLI -> PostgREST -> Postgres request -> native worker
-    -> analysis -> pair diff -> mastering plan -> WAV render -> report
-```
-
-Postgres/PostgREST owns durable application state. The filesystem owns source audio, rendered WAVs, plans, reports, corpus files, and benchmark artifacts. DSP code is independent from CLI, database, and UI state so future desktop and plugin wrappers can reuse the same contracts.
+The ignored API integration test requires Compose. Contribution, PR sizing, testing, evidence, and real-time rules are in [CONTRIBUTING.md](CONTRIBUTING.md). Product decisions are append-only in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## License
 
-MIT. AlbumDB is separately licensed CC BY 4.0 and is never redistributed from this repository.
+MIT. AlbumDB is separately licensed CC BY 4.0 and is never redistributed from this repository. Plugin framework and SDK dependencies must retain their own required notices.

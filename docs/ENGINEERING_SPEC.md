@@ -1,46 +1,87 @@
-# doppelbanger Engineering Spec v0.2
+# doppelbanger Engineering Spec v0.3
 
 ## Phase 1 Exit
 
-Phase 1 turns the request scaffold into one audible, API-backed reference-mastering path:
+Phase 1 establishes the real plugin path. It is complete when a VST3 bundle loads in Ableton Live on macOS, obtains a plan through the local service, persists that plan in DAW state, processes host audio through the shared Rust processor, and passes the fast quality suite plus real-time and host validation gates.
 
 ```text
-CLI -> PostgREST -> Postgres request -> native worker
-    -> analysis -> pair diff -> mastering plan -> WAV render -> report
+plugin controller -> PostgREST -> request -> native worker
+                  -> analysis -> diff -> MasteringPlanV1
+                  <- immutable runtime plan snapshot
+
+VST3 callback -> Rust MasteringProcessor -> host output
+benchmark     -> Rust MasteringProcessor -> WAV + evidence
 ```
 
-The phase is complete when all ten AlbumDB pairs run through that path, the fast three-song suite supports repeatable Ableton review, and the automated correctness, quality, and performance gates pass.
+The Windows VST3 build must compile and pass automated plugin validation in Phase 1. Manual Windows DAW validation is required before the first public binary release.
 
-## Public Interfaces
+## Product Interface
+
+The VST3 plugin is the only supported MVP interface. Its first workflow selects one reference file, captures one complete dry premaster pass from the host input, submits analysis through the local API, displays the resulting plan controls, and applies the active plan to the DAW stream.
+
+The current source tree contains temporary developer harness commands:
 
 ```bash
-doppelbanger master \
-  --reference <reference.mp3|reference.wav> \
-  --target <target.mp3|target.wav> \
-  --output <mastered.wav> \
-  [--plan <edited-plan.json>] \
-  [--api-url <http://localhost:3000>]
-
-doppelbanger worker [--once] [--api-url <http://localhost:3000>]
-
-doppelbanger benchmark \
-  --corpus <albumdb-root> \
-  --output <benchmark.json> \
-  [--full]
+doppelbanger master --reference <path> --target <path> --output <path>
+doppelbanger worker [--once] [--api-url <url>]
+doppelbanger benchmark --corpus <path> --output <report.json> [--full]
 ```
 
-`master` submits and waits through PostgREST. It does not invoke DSP directly. `worker` is the only product process that executes the mastering pipeline. Library tests may call pure analysis and processing contracts directly.
+These commands are not distributed product APIs and have no compatibility promise. `master` and `benchmark` are test/evidence adapters over the same API, plan, and processor contracts as the plugin. As the plugin shell lands, orchestration moves under `cargo xtask` or test binaries and the public-looking `master` command is removed.
 
-The scaffold-only `prepare` command and incoming generic `Tuning` fields are removed. User adjustment happens by editing a generated `MasteringPlanV1` and submitting a linked rerun with `--plan`.
+## Component Boundaries
 
-## Audio Contract
+| Component | Owns | Must not own |
+| --- | --- | --- |
+| Rust analysis/plan engine | file decoding, metrics, diffs, plan generation | host APIs, UI state |
+| Rust `MasteringProcessor` | bounded block processing and DSP state | files, API, database, logging, allocation during process |
+| C ABI bridge | panic containment, typed plan transfer, channel buffer adaptation | DSP rules, persistence |
+| iPlug2 wrapper | VST3 lifecycle, parameters, editor, DAW state, fixed capture handoff, background control client | mastering math |
+| native worker | queued analysis/render jobs | host callback work |
+| Postgres/PostgREST | durable tracks, jobs, analyses, plans, reports | audio bytes, callback synchronization |
+| filesystem | imported audio and generated artifacts | application state transitions |
 
-- Input: decoded stereo MP3 or WAV content. Extensions do not establish validity.
-- Internal samples: interleaved `f32`, streamed in bounded blocks at the input sample rate.
-- Output: stereo IEEE 32-bit float WAV at the target sample rate and duration.
-- No Phase 1 resampling, dithering, limiting, compression, transient shaping, or stereo modification.
-- The `-1 dBTP` ceiling applies to processed output. Identity bypass remains sample-exact and reports a pre-existing hot source rather than changing it.
-- Corrupt, unsupported, mono, non-finite, or inconsistent streams fail with a field- and path-specific error.
+The current single Rust crate may remain intact while these boundaries are proved. Split crates only when the C ABI or independent build graph requires it.
+
+## Plugin Framework
+
+The initial wrapper uses iPlug2 pinned to a reviewed commit. iPlug2 provides VST3 now and AUv2/AUv3 later under a permissive license, while the Rust core remains the source of DSP truth. The wrapper builds with CMake and links a Rust static library generated by Cargo.
+
+VST3 is first because Ableton supports it on both macOS and Windows. AU is a later packaging target, not a separate processor. VST2 is excluded.
+
+See `docs/PLUGIN_ARCHITECTURE.md` for the decision record, threading model, and wrapper contract.
+
+## Audio And DSP Contract
+
+- Input and output are stereo `f32` host buffers.
+- Supported sample rates are `44.1`, `48`, `88.2`, `96`, and `192 kHz`.
+- Processing must handle zero-length blocks and host block sizes from `1` through `8192` frames.
+- DSP state persists across arbitrary block partitions; output may not depend on block size for the same sample sequence and parameter timeline.
+- Construction, plan validation, file I/O, analysis, and coefficient preparation happen outside the callback.
+- The callback performs no heap allocation, lock acquisition, waiting, file or network access, database work, logging, process creation, panic, or exception propagation.
+- The initial broad-EQ and gain processor reports exactly zero latency samples.
+- Bypass is sample-exact for a stable bypass state.
+- Non-finite output is an explicit processor fault and never becomes saved state or a successful render.
+
+The C ABI accepts planar host buffers without copying. Offline interleaved audio uses a thin adapter around the same sample processor. Adapter parity is covered by tests.
+
+When target capture is armed, the callback copies dry input into a preallocated SPSC ring. A background writer drains that ring to a float WAV and only then submits the artifact for analysis. Ring overflow invalidates the capture; partial audio is never treated as a valid target.
+
+## Plan And State Contract
+
+`MasteringPlanV1` remains the analysis-to-processing boundary. Before entering plugin state it is validated for schema version, processor version, source identity, sample rate, parameter bounds, topology, and finite values.
+
+The plugin stores:
+
+- the complete active plan;
+- stable host parameter IDs and current user overrides;
+- analyzer and processor versions;
+- reference and target hashes;
+- the local request/report identifier when available.
+
+The DAW state must be sufficient to restore audio without Postgres or PostgREST. When the service is unavailable, new analysis fails visibly while the last valid plan continues unchanged. Invalid or incompatible restored state fails closed to bypass and reports the exact incompatibility outside the callback.
+
+Plan replacement is prepared on a background/controller thread. The audio thread receives a bounded immutable snapshot and transitions with fixed-memory smoothing or crossfade. Mutable database or UI objects never cross into the callback.
 
 ## Analysis V1
 
@@ -53,51 +94,85 @@ The scaffold-only `prepare` command and incoming generic `Tuning` fields are rem
 - transient density and p95 half-wave spectral flux;
 - clipping, DC, and non-finite sample counts.
 
-Spectrum uses a 4096-sample Hann window and 1024-sample hop. Transients use a 2048-sample Hann window and 512-sample hop. Frames below `-70 dBFS` are excluded from spectral, stereo, and transient distributions.
+Spectrum uses independent left/right power before channel averaging so anti-phase stereo energy is preserved. `PairDiffV1` stores signed `reference - target` values. There is no opaque aggregate quality score.
 
-`PairDiffV1` stores signed `reference - target` values. Reports expose the metric vector directly; they do not publish a single opaque quality score.
+## Initial Processor
 
-## Mastering Plan V1
-
-The generated plan contains analyzer/processor versions, source hashes, bypass state, desired/applied gain, loudness shortfall, a `-1 dBTP` ceiling, and three editable EQ filters:
+The first runtime plan contains three editable EQ filters plus safe gain:
 
 - low shelf at `120 Hz`;
 - broad bell at `1 kHz`;
-- high shelf at `6 kHz`.
+- high shelf at `6 kHz`;
+- output gain constrained by measured true-peak headroom.
 
-Generated and edited EQ gains are constrained to `-3..=3 dB`. Overall gain is constrained to `-12..=12 dB` and may not exceed measured true-peak headroom. If the safe gain cannot reach reference loudness, the plan records the shortfall rather than clipping.
+EQ gains are constrained to `-3..=3 dB`; gain is constrained to `-12..=12 dB`. Matching decoded audio produces an explicit bypass plan. This linear processor is a baseline for the plugin architecture, not the final mastering algorithm.
 
-Matching source hashes and zero deltas produce an explicit bypass plan. WAV identity is evaluated by exact decoded `f32` samples; MP3 identity is evaluated against deterministic decoded PCM, never encoded bytes.
+Before the first release, the runtime chain also includes a transparent true-peak safety limiter. Its lookahead is fixed, no more than `5 ms`, and reported exactly to the host. It has gain-reduction telemetry and separate conformance, artifact, latency, and ablation gates. Musical compression remains deferred.
 
-## API Lifecycle
+## State Plane
 
-The state plane stores tracks, requests, analyses, plans, render artifacts, and failures. Track roles belong to requests, not tracks.
+Track files remain on disk. Postgres stores track metadata, requests, analyses, plans, render records, reports, and failures. PostgREST exposes those records to the plugin controller and CLI. The native worker claims jobs atomically with `FOR UPDATE SKIP LOCKED`.
 
 ```text
-queued -> analyzing -> ready -> rendering -> complete
-                   \-> failed
+created -> capturing -> analyzing -> ready
+          \-----------> failed
 ```
 
-The worker claims one queued request atomically through a Postgres RPC using `FOR UPDATE SKIP LOCKED`. Edited-plan reruns create a new request linked to their parent. Audio bytes remain on the filesystem and never travel through PostgREST.
+The plugin never polls or calls the API from the audio callback. Background requests are cancellable and bounded. API loss cannot mutate the active processor state.
 
 ## Evaluation Corpus
 
-AlbumDB v1 is the public paired corpus. The untracked local data directory contains the published mixed-stem and stereo-master archives. Premasters are reconstructed by summing each song's aligned mixed stems into unclipped 32-bit float WAV without normalization or additional processing.
+AlbumDB v1 is the public paired corpus. Premasters are reconstructed from aligned mixed stems into unclipped 32-bit float WAV without normalization or additional processing.
 
 - Fast suite: songs `01`, `04`, and `10`.
 - Full suite: all ten songs.
-- Git stores only manifests, checksums, attribution, aggregate metrics, and benchmark reports.
+- User suite: private techno reference/premaster pairs, stored outside git, with only anonymized aggregate evidence published.
 
-## Quality Gates
+Prepared manifests and SHA-256 values establish corpus identity. The full download remains opt-in and is never a normal unit-test dependency.
+
+## Automated Gates
 
 - Official EBU loudness fixtures pass their published tolerances.
-- Identity produces deterministic analysis, zero diff, bypass, and an exact decoded WAV null.
-- Every AlbumDB output preserves sample rate, channels, duration, finite samples, and true peak at or below `-1 dBTP` within `0.1 dB` measurement tolerance.
-- Median three-band tonal error improves by at least `25%`; no item regresses more than `0.25 dB`.
-- Absolute loudness error does not increase unless true-peak capping is active and reported.
-- Analysis and render each run at least `1x realtime` with peak RSS below `512 MiB` on the baseline Apple M5 / 10 CPU / 16 GB / macOS 26.2 machine.
-- Ableton review of the fast suite finds no severe artifact and rates at least two of three outputs closer to the corresponding master.
+- Identity produces deterministic analysis, zero diff, bypass, and an exact decoded null.
+- Anti-phase stereo content retains spectral energy.
+- Three-region tonal error matches the three controlled EQ regions; median error improves at least `25%`, with no item regression above `0.25 dB`.
+- Loudness error may regress at most `0.05 dB`, or `0.25 dB` when a reported true-peak shortfall is active.
+- Processed outputs preserve sample rate, channels, duration, finite samples, and true peak at or below `-1 dBTP` within `0.1 dB` measurement tolerance.
+- `MasteringProcessor::process` allocates zero times and is invariant to block partitioning.
+- VST3 passes the official validator with no failures and restores identical state after reload.
+- Target capture drops zero frames or fails the capture explicitly.
+- The offline renderer and plugin adapter produce equivalent samples for the same plan and input within the declared numeric tolerance.
+
+## Performance Gates
+
+Release performance measurements use an optimized build on the documented machine and record raw per-block timing.
+
+- Baseline: Apple M5, 10 CPU cores, 16 GB RAM, macOS 26.2.
+- Stress point: stereo, 48 kHz, 64-frame blocks, at least ten continuous minutes.
+- p99 processor time: less than `20%` of the `1.333 ms` block deadline.
+- Maximum processor time: less than `50%` of that deadline after warm-up.
+- Callback allocations, locks, waits, I/O calls, and non-finite samples: exactly zero.
+- Capture stress: zero dropped frames for 30 minutes at 96 kHz with 32-frame blocks.
+- Offline analysis and end-to-end render: each at least `1x realtime`.
+- Peak process RSS during the corpus benchmark: less than `512 MiB`.
+
+Timing thresholds are regression gates on named baseline hardware, not generic assertions in shared CI.
+
+## Host Gates
+
+Before a public VST3 release:
+
+- build and validate macOS arm64/x86_64 and Windows x86_64 bundles;
+- load, save, close, reopen, automate, bypass, freeze, and offline-export in Ableton Live;
+- test every supported sample rate and representative buffer sizes;
+- verify plugin-reported latency against measured impulse latency;
+- run the fast corpus and at least three user-owned techno pairs through the plugin path;
+- complete the structured listening checklist without severe artifacts.
 
 ## Phase 1 Deferrals
 
-Browser workshop UI, compression/limiting, transient shaping, stereo modification, reusable presets, VST3/AU, Windows packaging, and one-command installation are outside Phase 1. Their revisit triggers live in `docs/DECISIONS.md` and linked GitHub issues.
+- Musical compression follows the validated linear VST3 plus safety-limiter baseline and requires separate ablation, artifact, loudness, and latency evidence.
+- Stereo and transient processing remain measurement-only until their metrics pass conformance checks.
+- AU follows VST3 validation through the same iPlug2 and Rust boundaries.
+- Reusable reference presets, public one-command installation, signing/notarization, and polished release UI follow the first stable plugin shell.
+- A browser workshop UI is not part of the product plan.
