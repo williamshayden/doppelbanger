@@ -1,0 +1,31 @@
+.github/workflows/ci.yml
+  s_d5230f3b49a1f4::t_b0d68f43e7c7c2 32-33
+tests/native/native_abi_smoke.h
+  s_d5230f3b49a1f4::t_95810ce7e7a9d1 1-202
+scripts/test_native_ffi.sh
+  s_d5230f3b49a1f4::t_34d81e1c156965 19
+  s_d5230f3b49a1f4::t_7d5fceabfdac01 44
+  s_d5230f3b49a1f4::t_95810ce7e7a9d1 1-18,20-43,45-63
+tests/native/c11_smoke.c
+  s_d5230f3b49a1f4::t_95810ce7e7a9d1 1-5
+docs/VALIDATION.md
+  s_d5230f3b49a1f4::t_b0d68f43e7c7c2 37,40
+tests/native/cpp17_smoke.cpp
+  s_d5230f3b49a1f4::t_95810ce7e7a9d1 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e9c10f07bc17dcab883dd74cfd2fef9114c5432a",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
