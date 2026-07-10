@@ -60,7 +60,7 @@ fn rejects_mono_audio_at_the_decode_boundary() {
 
     let err = AudioReader::open(&path).unwrap_err();
     assert!(err.to_string().contains("stereo"));
-    assert!(err.to_string().contains(path.to_str().unwrap()));
+    assert!(err.to_string().contains(&canonical_display(&path)));
 }
 
 #[test]
@@ -70,7 +70,11 @@ fn rejects_corrupt_files_with_supported_extensions() {
 
     let err = AudioReader::open(&path).unwrap_err();
     assert!(err.to_string().contains("audio"));
-    assert!(err.to_string().contains(path.to_str().unwrap()));
+    assert!(err.to_string().contains(&canonical_display(&path)));
+}
+
+fn canonical_display(path: &Path) -> String {
+    path.canonicalize().unwrap().to_string_lossy().into_owned()
 }
 
 fn fixture_path(name: &str) -> PathBuf {
