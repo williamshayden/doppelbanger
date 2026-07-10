@@ -7,6 +7,9 @@ use crate::{
     TRUE_PEAK_CEILING_DBTP,
 };
 
+mod process;
+pub use process::db_processor_process_f32;
+
 pub const DB_ABI_VERSION: u32 = 1;
 pub const DB_PLAN_SCHEMA_VERSION: u32 = 1;
 pub const DB_PROCESSOR_VERSION: u32 = 1;
@@ -41,6 +44,10 @@ pub struct DbRuntimePlanV1 {
 
 pub struct DbProcessor {
     processor: MasteringProcessor,
+    max_block_frames: u32,
+    faulted: bool,
+    #[cfg(test)]
+    panic_next_process: bool,
 }
 
 #[unsafe(no_mangle)]
@@ -91,7 +98,15 @@ pub unsafe extern "C" fn db_processor_create(
             return DbStatus::InvalidConfiguration;
         };
         // SAFETY: output was checked above and receives ownership of the Box allocation.
-        unsafe { *output = Box::into_raw(Box::new(DbProcessor { processor })) };
+        unsafe {
+            *output = Box::into_raw(Box::new(DbProcessor {
+                processor,
+                max_block_frames,
+                faulted: false,
+                #[cfg(test)]
+                panic_next_process: false,
+            }))
+        };
         DbStatus::Ok
     })
 }
@@ -109,7 +124,10 @@ pub unsafe extern "C" fn db_processor_reset(processor: *mut DbProcessor) -> DbSt
             return DbStatus::NullPointer;
         }
         // SAFETY: The caller owns a live handle returned by db_processor_create.
-        unsafe { (*processor).processor.reset() };
+        unsafe {
+            (*processor).processor.reset();
+            (*processor).faulted = false;
+        }
         DbStatus::Ok
     })
 }

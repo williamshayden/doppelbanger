@@ -73,6 +73,8 @@ The eventual one-command developer installer may orchestrate these same pinned c
 
 Construction, plan validation, coefficient preparation, and state migration happen before publication to the callback. The callback owns filter history and smoothing state.
 
+Production callback code must be panic-free. The C ABI contains an unwind as a last-resort host-survival boundary, silences a valid affected block, and latches the processor until reset. The Rust standard-library panic hook is process-global and runs before unwind containment, so the library does not replace it. Any unexpected panic remains a callback-conformance failure even when the ABI safely returns an error.
+
 ## Processor Contract
 
 The Rust processor exposes a block-oriented API and contains all mastering math. The wrapper adapts host buffers and stable host parameter IDs only.
