@@ -85,6 +85,30 @@ fn bypass_is_an_exact_no_op() {
 }
 
 #[test]
+fn bypass_silences_non_finite_interleaved_blocks() {
+    let mut samples = signal(128);
+    samples[17] = f32::NAN;
+    let mut processor = MasteringProcessor::new(&plan(true), 48_000).unwrap();
+
+    let error = processor.process_interleaved(&mut samples).unwrap_err();
+
+    assert_eq!(error.to_string(), "processor produced a non-finite sample");
+    assert!(samples.iter().all(|sample| *sample == 0.0));
+}
+
+#[test]
+fn bypass_silences_non_finite_planar_blocks() {
+    let (mut left, mut right) = deinterleave(&signal(128));
+    right[8] = f32::INFINITY;
+    let mut processor = MasteringProcessor::new(&plan(true), 48_000).unwrap();
+
+    let error = processor.process_planar(&mut left, &mut right).unwrap_err();
+
+    assert_eq!(error.to_string(), "processor produced a non-finite sample");
+    assert!(left.iter().chain(&right).all(|sample| *sample == 0.0));
+}
+
+#[test]
 fn malformed_interleaved_blocks_fail_without_panicking() {
     let mut samples = [0.0_f32; 3];
     let mut processor = MasteringProcessor::new(&plan(false), 48_000).unwrap();

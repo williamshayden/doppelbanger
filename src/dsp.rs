@@ -41,6 +41,10 @@ impl MasteringProcessor {
             return Err(ProcessError::OddSampleCount);
         }
         if self.bypass {
+            if samples.iter().any(|sample| !sample.is_finite()) {
+                samples.fill(0.0);
+                return Err(ProcessError::NonFiniteOutput);
+            }
             return Ok(());
         }
 
@@ -68,6 +72,15 @@ impl MasteringProcessor {
             return Err(ProcessError::ChannelLengthMismatch);
         }
         if self.bypass {
+            if left
+                .iter()
+                .chain(right.iter())
+                .any(|sample| !sample.is_finite())
+            {
+                left.fill(0.0);
+                right.fill(0.0);
+                return Err(ProcessError::NonFiniteOutput);
+            }
             return Ok(());
         }
 
