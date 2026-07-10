@@ -29,6 +29,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --all-targets
+      - name: Native C and C++ ABI smoke
+        run: bash scripts/test_native_ffi.sh
       - name: Validate Compose
         run: docker compose config
 
