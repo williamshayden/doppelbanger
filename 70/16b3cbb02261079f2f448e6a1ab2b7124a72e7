@@ -1,0 +1,31 @@
+docs/PLUGIN_ARCHITECTURE.md
+  s_d5230f3b49a1f4::t_30be7e5c311fb2 76-77
+src/ffi.rs
+  s_d5230f3b49a1f4::t_8c81ce6aafbbc7 10-12,47-50,101-109,127-130
+src/lib.rs
+  s_d5230f3b49a1f4::t_8c81ce6aafbbc7 33
+include/doppelbanger_dsp.h
+  s_d5230f3b49a1f4::t_df7050dfb8577f 52-68
+tests/ffi_process.rs
+  s_d5230f3b49a1f4::t_19d2fe40573a8c 46,77
+  s_d5230f3b49a1f4::t_9fc6dd0b8aa925 1-45,47-76,78-104,106-222,224-225
+  s_d5230f3b49a1f4::t_b69f22996c3bb8 105,223
+src/ffi/process.rs
+  s_d5230f3b49a1f4::t_8be2985e09c05a 1-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7016b3cbb02261079f2f448e6a1ab2b7124a72e7",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
