@@ -30,7 +30,7 @@ pub use dsp::{MasteringProcessor, ProcessError};
 pub use ffi::{
     DB_ABI_VERSION, DB_MAX_BLOCK_FRAMES, DB_PLAN_SCHEMA_VERSION, DB_PROCESSOR_VERSION, DbProcessor,
     DbRuntimePlanV1, DbStatus, db_processor_create, db_processor_destroy,
-    db_processor_latency_samples, db_processor_reset,
+    db_processor_latency_samples, db_processor_process_f32, db_processor_reset,
 };
 pub use plan::{
     EqFilterKindV1, EqFilterV1, MasteringPlanV1, PROCESSOR_VERSION, TRUE_PEAK_CEILING_DBTP,

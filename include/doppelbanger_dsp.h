@@ -49,7 +49,23 @@ db_status db_processor_create(const db_runtime_plan_v1 *plan,
                               uint32_t max_block_frames,
                               db_processor **output);
 
-/* Clears filter history. Must not overlap another call. */
+/*
+ * Processes exactly frames writable samples in each planar channel. Nonzero
+ * buffers must be aligned, non-overlapping, and valid for the call. Calls on
+ * one handle must not overlap across threads.
+ *
+ * A new process fault or contained panic silences the valid block and latches
+ * the handle until reset. An already-faulted handle and validation errors
+ * leave buffers unchanged. Rust invokes the process-configured panic hook
+ * before containment; any panic fails callback conformance even when this ABI
+ * safely returns DB_STATUS_PANIC.
+ */
+db_status db_processor_process_f32(db_processor *processor,
+                                   float *left,
+                                   float *right,
+                                   uint32_t frames);
+
+/* Clears filter history and a latched fault. Must not overlap another call. */
 db_status db_processor_reset(db_processor *processor);
 
 /*
