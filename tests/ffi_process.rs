@@ -134,6 +134,30 @@ fn ffi_process_rejects_invalid_buffers_and_latches_non_finite_faults() {
 }
 
 #[test]
+fn ffi_bypass_silences_and_latches_non_finite_blocks() {
+    let mut plan = runtime_plan();
+    plan.bypass = 1;
+    plan.applied_gain_db = 0.0;
+    plan.eq_gains_db = [0.0; 3];
+    let handle = create(&plan, 64);
+    let mut left = signal(64, 440.0);
+    let mut right = signal(64, 880.0);
+    right[8] = f32::INFINITY;
+
+    assert_eq!(
+        unsafe { db_processor_process_f32(handle, left.as_mut_ptr(), right.as_mut_ptr(), 64) },
+        DbStatus::ProcessFault
+    );
+    assert!(left.iter().chain(&right).all(|sample| *sample == 0.0));
+    assert_eq!(
+        unsafe { db_processor_process_f32(handle, ptr::null_mut(), ptr::null_mut(), 0) },
+        DbStatus::ProcessFault
+    );
+    assert_eq!(unsafe { db_processor_reset(handle) }, DbStatus::Ok);
+    assert_eq!(unsafe { db_processor_destroy(handle) }, DbStatus::Ok);
+}
+
+#[test]
 fn ffi_process_and_reset_allocate_and_deallocate_nothing() {
     let mut plan = runtime_plan();
     plan.applied_gain_db = 0.0;
