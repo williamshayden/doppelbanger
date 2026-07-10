@@ -1,0 +1,22 @@
+tests/dsp_contract.rs
+  s_d5230f3b49a1f4::t_7735de13abd7bc 87-110
+src/dsp.rs
+  s_d5230f3b49a1f4::t_ad308e75e97d74 75-79
+  s_d5230f3b49a1f4::t_cfacf57e27ef14 44-47,80-83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9616447bc9b9b710d7e91c178ea5a8b1dab0ff84",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
