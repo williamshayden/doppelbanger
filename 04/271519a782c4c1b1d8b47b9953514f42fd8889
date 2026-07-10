@@ -1,0 +1,19 @@
+tests/ffi_process.rs
+  s_d5230f3b49a1f4::t_11b586d31cf42e 130-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "04271519a782c4c1b1d8b47b9953514f42fd8889",
+  "prompts": {},
+  "sessions": {
+    "s_d5230f3b49a1f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f05ea-7cf0-72d0-92e0-bde0a3a2185c",
+        "model": "unknown"
+      },
+      "human_author": "Will Hayden <97936978+williamshayden@users.noreply.github.com>"
+    }
+  }
+}
