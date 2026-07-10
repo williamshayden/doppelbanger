@@ -11,6 +11,7 @@ thread_local! {
 }
 
 static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+static DEALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -27,11 +28,13 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        record_deallocation();
         unsafe { System.dealloc(pointer, layout) }
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         record_allocation();
+        record_deallocation();
         unsafe { System.realloc(pointer, layout, size) }
     }
 }
@@ -58,6 +61,7 @@ fn processing_allocates_nothing_after_construction() {
     let mut block = signal(256);
     COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
     ALLOCATION_COUNT.store(0, Ordering::SeqCst);
+    DEALLOCATION_COUNT.store(0, Ordering::SeqCst);
 
     COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
     for _ in 0..100 {
@@ -66,6 +70,7 @@ fn processing_allocates_nothing_after_construction() {
     COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
 
     assert_eq!(ALLOCATION_COUNT.load(Ordering::SeqCst), 0);
+    assert_eq!(DEALLOCATION_COUNT.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -77,6 +82,30 @@ fn bypass_is_an_exact_no_op() {
     processor.process_interleaved(&mut samples).unwrap();
 
     assert_eq!(samples, expected);
+}
+
+#[test]
+fn bypass_silences_non_finite_interleaved_blocks() {
+    let mut samples = signal(128);
+    samples[17] = f32::NAN;
+    let mut processor = MasteringProcessor::new(&plan(true), 48_000).unwrap();
+
+    let error = processor.process_interleaved(&mut samples).unwrap_err();
+
+    assert_eq!(error.to_string(), "processor produced a non-finite sample");
+    assert!(samples.iter().all(|sample| *sample == 0.0));
+}
+
+#[test]
+fn bypass_silences_non_finite_planar_blocks() {
+    let (mut left, mut right) = deinterleave(&signal(128));
+    right[8] = f32::INFINITY;
+    let mut processor = MasteringProcessor::new(&plan(true), 48_000).unwrap();
+
+    let error = processor.process_planar(&mut left, &mut right).unwrap_err();
+
+    assert_eq!(error.to_string(), "processor produced a non-finite sample");
+    assert!(left.iter().chain(&right).all(|sample| *sample == 0.0));
 }
 
 #[test]
@@ -133,12 +162,68 @@ fn linear_processor_reports_zero_latency_and_accepts_empty_blocks() {
     assert_eq!(processor.latency_samples(), 0);
 }
 
+#[test]
+fn planar_and_interleaved_adapters_produce_identical_samples() {
+    let input = signal(512);
+    let mut interleaved = input.clone();
+    let (mut left, mut right) = deinterleave(&input);
+    let mut interleaved_processor = MasteringProcessor::new(&plan(false), 48_000).unwrap();
+    let mut planar_processor = MasteringProcessor::new(&plan(false), 48_000).unwrap();
+
+    interleaved_processor
+        .process_interleaved(&mut interleaved)
+        .unwrap();
+    planar_processor
+        .process_planar(&mut left, &mut right)
+        .unwrap();
+
+    assert_eq!(interleaved, interleave(&left, &right));
+}
+
+#[test]
+fn reset_clears_filter_history_without_changing_configuration() {
+    let input = signal(512);
+    let (mut left, mut right) = deinterleave(&input);
+    let mut processor = MasteringProcessor::new(&plan(false), 48_000).unwrap();
+    processor.process_planar(&mut left, &mut right).unwrap();
+    let first = interleave(&left, &right);
+
+    processor.reset();
+    (left, right) = deinterleave(&input);
+    processor.process_planar(&mut left, &mut right).unwrap();
+
+    assert_eq!(first, interleave(&left, &right));
+}
+
+#[test]
+fn planar_processing_rejects_mismatched_channel_lengths() {
+    let mut left = [0.0_f32; 2];
+    let mut right = [0.0_f32; 1];
+    let mut processor = MasteringProcessor::new(&plan(false), 48_000).unwrap();
+
+    let error = processor.process_planar(&mut left, &mut right).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "planar stereo channels require equal frame counts"
+    );
+}
+
 fn record_allocation() {
     if COUNT_ALLOCATIONS
         .try_with(|enabled| enabled.get())
         .unwrap_or(false)
     {
         ALLOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn record_deallocation() {
+    if COUNT_ALLOCATIONS
+        .try_with(|enabled| enabled.get())
+        .unwrap_or(false)
+    {
+        DEALLOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -150,6 +235,23 @@ fn signal(frames: usize) -> Vec<f32> {
         samples.push(-left * 0.75);
     }
     samples
+}
+
+fn deinterleave(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let mut left = Vec::with_capacity(samples.len() / 2);
+    let mut right = Vec::with_capacity(samples.len() / 2);
+    for frame in samples.chunks_exact(2) {
+        left.push(frame[0]);
+        right.push(frame[1]);
+    }
+    (left, right)
+}
+
+fn interleave(left: &[f32], right: &[f32]) -> Vec<f32> {
+    left.iter()
+        .zip(right)
+        .flat_map(|(&left, &right)| [left, right])
+        .collect()
 }
 
 fn plan(bypass: bool) -> MasteringPlanV1 {
