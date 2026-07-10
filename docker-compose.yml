@@ -19,7 +19,7 @@ services:
       retries: 10
 
   api:
-    image: postgrest/postgrest
+    image: postgrest/postgrest:v14.14
     depends_on:
       db:
         condition: service_healthy

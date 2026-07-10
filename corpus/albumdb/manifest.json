@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "record_id": 19683001,
+  "doi": "10.5281/zenodo.19683001",
+  "title": "AlbumDB: A multitrack dataset of a ten-song album with stereo and immersive 7.1.4 masters",
+  "publication_date": "2026-04-21",
+  "license": "CC-BY-4.0",
+  "creators": [
+    "Thomas McKenzie",
+    "Eloi Moliner Juanpere",
+    "Alec Wright"
+  ],
+  "archives": [
+    {
+      "name": "stems_mixed.zip",
+      "size_bytes": 4959457891,
+      "md5": "a6ddc38004047879622542f41ab691ed",
+      "url": "https://zenodo.org/api/records/19683001/files/stems_mixed.zip/content"
+    },
+    {
+      "name": "masters_stereo.zip",
+      "size_bytes": 339528043,
+      "md5": "06ff09dfe1d03788c71071b419eb0366",
+      "url": "https://zenodo.org/api/records/19683001/files/masters_stereo.zip/content"
+    }
+  ],
+  "songs": [
+    { "id": "01", "title": "Extraordinary" },
+    { "id": "02", "title": "No More Mr Nice Guy" },
+    { "id": "03", "title": "Karma" },
+    { "id": "04", "title": "Magistrates" },
+    { "id": "05", "title": "Diva" },
+    { "id": "06", "title": "Let The Light In" },
+    { "id": "07", "title": "Take On The Seas" },
+    { "id": "08", "title": "An Evening To Myself" },
+    { "id": "09", "title": "Great British Summer" },
+    { "id": "10", "title": "It Ain't Easy (To Mend A Heart)" }
+  ],
+  "fast_suite": ["01", "04", "10"]
+}

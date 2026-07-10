@@ -1,4 +1,6 @@
 /target
+.worktrees/
 .DS_Store
 .env
 tmp/
+var/

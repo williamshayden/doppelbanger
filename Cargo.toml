@@ -2,7 +2,17 @@
 name = "doppelbanger"
 version = "0.1.0"
 edition = "2024"
+default-run = "doppelbanger"
 
 [dependencies]
+biquad = "0.6"
+ebur128 = "0.1.10"
+hound = "3.5"
+libc = "0.2"
+rustfft = "6.4"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha2 = "0.10"
+symphonia = { version = "0.6", default-features = false, features = ["mp3", "wav", "pcm"] }
+ureq = { version = "3.3", features = ["json"], default-features = false }
+uuid = { version = "1", features = ["serde"] }
