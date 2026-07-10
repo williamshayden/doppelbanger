@@ -1,12 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use biquad::{Biquad, Coefficients, DirectForm2Transposed, ToHertz, Type};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AudioReader, DoppelbangerError, EqFilterKindV1, EqFilterV1, MasteringPlanV1, PROCESSOR_VERSION,
-    Result, TrackAnalysisV1, analyze_track, validate_plan,
+    AudioReader, DoppelbangerError, MasteringPlanV1, MasteringProcessor, PROCESSOR_VERSION, Result,
+    TrackAnalysisV1, analyze_track, validate_plan,
 };
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -30,12 +29,7 @@ pub fn render_master(
 
     let mut reader = AudioReader::open(target_path)?;
     let sample_rate_hz = reader.info().sample_rate_hz;
-    let mut filters = if plan.bypass {
-        Vec::new()
-    } else {
-        create_filters(&plan.eq, sample_rate_hz)?
-    };
-    let gain = 10.0_f32.powf(plan.applied_gain_db as f32 / 20.0);
+    let mut processor = MasteringProcessor::new(plan, sample_rate_hz)?;
     let temp_path = temporary_output_path(&output_path);
     let spec = hound::WavSpec {
         channels: 2,
@@ -48,22 +42,10 @@ pub fn render_master(
 
     let render_result = (|| {
         while let Some(mut block) = reader.next_block()? {
+            processor
+                .process_interleaved(&mut block.samples)
+                .map_err(|error| render_error("render", &output_path, error))?;
             for frame in block.samples.chunks_exact_mut(2) {
-                if !plan.bypass {
-                    for filter in &mut filters {
-                        frame[0] = filter.left.run(frame[0]);
-                        frame[1] = filter.right.run(frame[1]);
-                    }
-                    frame[0] *= gain;
-                    frame[1] *= gain;
-                }
-                if !frame[0].is_finite() || !frame[1].is_finite() {
-                    return Err(render_error(
-                        "render",
-                        &output_path,
-                        "processor produced a non-finite sample",
-                    ));
-                }
                 writer
                     .write_sample(frame[0])
                     .and_then(|_| writer.write_sample(frame[1]))
@@ -130,41 +112,6 @@ fn remove_failed_output(
             format!("{message}; additionally failed to remove unsafe output: {cleanup_error}"),
         ),
     }
-}
-
-struct StereoBiquad {
-    left: DirectForm2Transposed<f32>,
-    right: DirectForm2Transposed<f32>,
-}
-
-fn create_filters(filters: &[EqFilterV1], sample_rate_hz: u32) -> Result<Vec<StereoBiquad>> {
-    filters
-        .iter()
-        .filter(|filter| filter.gain_db != 0.0)
-        .map(|filter| {
-            let filter_type = match filter.kind {
-                EqFilterKindV1::LowShelf => Type::LowShelf(filter.gain_db as f32),
-                EqFilterKindV1::Bell => Type::PeakingEQ(filter.gain_db as f32),
-                EqFilterKindV1::HighShelf => Type::HighShelf(filter.gain_db as f32),
-            };
-            let coefficients = Coefficients::<f32>::from_params(
-                filter_type,
-                (sample_rate_hz as f32).hz(),
-                (filter.frequency_hz as f32).hz(),
-                filter.q as f32,
-            )
-            .map_err(|err| {
-                DoppelbangerError::InvalidPlan(format!(
-                    "cannot create {:?} filter at {} Hz: {err:?}",
-                    filter.kind, filter.frequency_hz
-                ))
-            })?;
-            Ok(StereoBiquad {
-                left: DirectForm2Transposed::new(coefficients),
-                right: DirectForm2Transposed::new(coefficients),
-            })
-        })
-        .collect()
 }
 
 fn absolute_output_path(path: &Path) -> Result<PathBuf> {
