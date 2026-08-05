@@ -49,7 +49,7 @@ cargo test --test api_integration -- --ignored --test-threads=1
 docker compose down
 ```
 
-It proves PostgREST request creation, atomic worker claim, state transitions, plan/report persistence, filesystem artifacts, and explicit failure behavior. Audio bytes never travel through PostgREST.
+It proves PostgREST request creation, atomic worker claim, and the exact request-kind transitions: `plan_only` follows `queued -> analyzing -> plan_ready`, while `validation_render` must stop at committed `plan_ready` until an explicit idempotent claim with the same plan hash advances it through `rendering -> complete`; either kind may enter `failed` from a nonterminal state. It also proves early or mismatched render claims fail, render fields are optional only for `plan_only`, reports use the canonical active-plan hash, artifact roots are managed, authentication is required, traversal is rejected, and failures are explicit. Audio bytes never travel through PostgREST.
 
 ### Tier 3: Fast Real-Audio Quality
 

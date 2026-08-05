@@ -338,3 +338,14 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Consequences:** Existing `master`, `worker`, and `benchmark` commands are temporary repository harnesses; reusable orchestration moves to `cargo xtask` or test binaries, while the companion worker remains an internal service process.
 - **Revisit trigger:** Add a public CLI only after a concrete headless or batch user workflow has independent demand and can reuse the exact plugin/service contracts.
 - **GitHub:** None.
+
+## PD-031: The first product editor uses React in an iPlug2 WebView
+- **Status:** `accepted`
+- **Date:** 2026-08-05
+- **Area:** plugin-ux
+- **Decision:** Prove the VST3 audio, parameter, and state path first with an iPlug2 `UI NONE` target, then make bundled React and TypeScript assets in an iPlug2 WebView the first user-visible product editor.
+- **Rationale:** A headless host proof isolates VST3 and Rust-ABI failures without creating a disposable C++ interface, while React supports the intended product UI without maintaining two editor implementations.
+- **Source:** [Plugin architecture editor architecture](PLUGIN_ARCHITECTURE.md#editor-architecture)
+- **Consequences:** C++ owns the versioned editor bridge, host parameters, DAW state, file dialogs, and background handoff; React owns presentation only. Release assets are local and offline, WebView failure cannot interrupt audio, and bridge compatibility requires native and frontend contract tests.
+- **Revisit trigger:** Reconsider IGraphics only if bounded Windows and macOS WebView prototypes fail documented host compatibility, accessibility, offline-resource, or supportability gates.
+- **GitHub:** [#5 VST3 plugin path with Ableton validation](https://github.com/williamshayden/doppelbanger/issues/5).
