@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-05
 
-**Status:** Architecture accepted; milestone roadmap draft for user review
+**Status:** Approved for implementation on 2026-08-05; Milestones 0–1 are detailed in the native Windows headless VST3 implementation plan
 
 ## Goal
 
