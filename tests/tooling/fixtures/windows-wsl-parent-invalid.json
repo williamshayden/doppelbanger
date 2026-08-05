@@ -1,0 +1,8 @@
+{
+  "extends": "windows-native-valid.json",
+  "wsl": false,
+  "wsl_distro_name": "",
+  "wsl_interop": "",
+  "ancestors": ["powershell.exe", "wslhost.exe", "explorer.exe"],
+  "expected_code": "DBDOC_WSL_FORBIDDEN"
+}
