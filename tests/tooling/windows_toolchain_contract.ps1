@@ -863,10 +863,86 @@ try {
     Assert-Equal $describe.ExitCode 0 '-Describe accepts the locked native fixture'
     $description = $describe.Text | ConvertFrom-Json
     Assert-Equal $description.tool 'cmake' '-Describe reports requested tool'
+    Assert-Equal $description.profile 'HeadlessVst3' '-Describe reports the selected native dependency profile'
     Assert-Equal $description.resolved_path (Join-Path $env:LOCALAPPDATA 'Programs\doppelbanger-devtools\cmake-4.4.2-windows-x86_64\bin\cmake.exe') '-Describe reports expanded approved path'
     Assert-Equal $description.environment.WindowsSdkDir 'C:\Program Files (x86)\Windows Kits\10\' '-Describe reports imported SDK environment'
     Assert-Equal $description.vsdevcmd_path 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat' '-Describe reports exact VsDevCmd path'
     Assert-Equal $description.vsdevcmd_import_args $lock.visual_studio.vsdevcmd_arguments '-Describe reports exact VsDevCmd import arguments'
+
+    $headlessNoState = Write-Variant {
+        param($p)
+        $p.wsl_present = $true; $p.wsl_version = '0.0.1'
+        $p.node_version = ''; $p.node_platform = ''; $p.node_arch = ''; $p.npm_version = ''
+        $p.docker_desktop_version = ''; $p.docker_desktop_build = ''; $p.docker_cli_version = ''; $p.docker_engine_version = ''
+        $p.docker_compose_version = ''; $p.docker_running = $false; $p.docker_plugin_config_valid = $false
+        $p.docker_compose_plugin_path = 'C:\shadow\docker-compose.exe'
+        $p.binaries = @($p.binaries | Where-Object { $_.name -notin @('node', 'docker', 'docker-compose') })
+    }
+    $description = Invoke-Describe -Tool 'cmake' -FixturePath $headlessNoState
+    Assert-Equal $description.ExitCode 0 'cmake selects HeadlessVst3 only'
+    $descriptionJson = $description.Text | ConvertFrom-Json
+    Assert-Equal $descriptionJson.profile 'HeadlessVst3' 'cmake reports its selected profile'
+
+    $stateOnly = Write-Variant {
+        param($p)
+        $p.compiler = ''; $p.compiler_version = ''; $p.vs_product_version = ''; $p.vs_installation_version = ''
+        $p.msvc_component = ''; $p.windows_sdk_component = ''; $p.windows_sdk_target = ''
+        $p.rust_version = ''; $p.rust_target = ''; $p.rust_components = [pscustomobject]@{ cargo=$false; rustfmt=$false; clippy=$false }
+        $p.cmake_version = ''; $p.ninja_version = ''
+        $p.vsdevcmd = [pscustomobject]@{ path=''; import_args=''; include=''; lib=''; windows_sdk_dir=''; windows_sdk_version=''; vctools_install_dir='' }
+        $p.binaries = @($p.binaries | Where-Object { $_.name -in @('docker', 'docker-compose') })
+    }
+    $description = Invoke-Describe -Tool 'docker' -FixturePath $stateOnly
+    Assert-Equal $description.ExitCode 0 'docker selects StatePlaneIntegration without native tools'
+    $descriptionJson = $description.Text | ConvertFrom-Json
+    Assert-Equal $descriptionJson.profile 'StatePlaneIntegration' 'docker reports its selected profile'
+    Assert-Equal $descriptionJson.vsdevcmd_path '' 'docker does not require a VsDevCmd import path'
+    Assert-Equal $descriptionJson.vsdevcmd_import_args '' 'docker does not require VsDevCmd import arguments'
+    Assert-Equal (($descriptionJson.environment.PSObject.Properties.Value -join '')) '' 'docker reports no imported compiler environment'
+
+    $stateWithNativeShadows = Write-Variant {
+        param($p)
+        foreach ($binary in @($p.binaries | Where-Object { $_.name -in @('cmake', 'ctest', 'ninja', 'cl', 'link', 'lib', 'dumpbin') })) {
+            $binary.ambient_path = "C:\shadow\$($binary.name).exe"
+        }
+        $p.vsdevcmd.path = 'C:\hostile\VsDevCmd.bat'
+        $p.vsdevcmd.import_args = '-hostile-import'
+        $p.vsdevcmd.include = 'C:\hostile\include'; $p.vsdevcmd.lib = 'C:\hostile\lib'
+        $p.vsdevcmd.windows_sdk_dir = 'C:\hostile\sdk'; $p.vsdevcmd.windows_sdk_version = '0.0.0.0\'; $p.vsdevcmd.vctools_install_dir = 'C:\hostile\msvc\'
+    }
+    $dockerIgnoringNativeShadows = Invoke-Describe -Tool 'docker' -FixturePath $stateWithNativeShadows
+    Assert-Equal $dockerIgnoringNativeShadows.ExitCode 0 'docker ignores native compiler shadows and invalid VsDevCmd metadata'
+    $dockerIgnoringNativeShadowsJson = $dockerIgnoringNativeShadows.Text | ConvertFrom-Json
+    Assert-Equal $dockerIgnoringNativeShadowsJson.profile 'StatePlaneIntegration' 'hostile compiler metadata does not change the Docker profile'
+    Assert-Equal @($dockerIgnoringNativeShadowsJson.environment.PSObject.Properties).Count 0 'Docker description has no compiler environment properties despite hostile probe data'
+    Assert-Equal $dockerIgnoringNativeShadowsJson.vsdevcmd_path '' 'Docker description suppresses a hostile VsDevCmd path'
+    Assert-Equal $dockerIgnoringNativeShadowsJson.vsdevcmd_import_args '' 'Docker description suppresses hostile VsDevCmd import arguments'
+
+    foreach ($nodeTool in @('node', 'npm', 'npx')) {
+        $nodeDescribe = Invoke-Describe -Tool $nodeTool -FixturePath $validFixture
+        Assert-True ($nodeDescribe.ExitCode -ne 0) "$nodeTool is rejected before tool resolution"
+        Assert-True ($nodeDescribe.Text -match 'DBDOC_TOOL_PROFILE_REQUIRED') "$nodeTool profile rejection has a stable code"
+    }
+
+    $ctestDescription = Invoke-Describe -Tool 'ctest' -FixturePath $headlessNoState
+    Assert-Equal $ctestDescription.ExitCode 0 'ctest selects HeadlessVst3'
+    $ctestDescriptionJson = $ctestDescription.Text | ConvertFrom-Json
+    Assert-Equal $ctestDescriptionJson.profile 'HeadlessVst3' 'ctest reports its selected profile'
+    Assert-Equal $ctestDescriptionJson.resolved_path (Join-Path $env:LOCALAPPDATA 'Programs\doppelbanger-devtools\cmake-4.4.2-windows-x86_64\bin\ctest.exe') 'ctest resolves from the locked CMake bin directory'
+
+    $composeShadowFixture = Join-Path $fixtureRoot 'windows-compose-shadow-invalid.json'
+    $composeShadowDocker = Invoke-Describe -FixturePath $composeShadowFixture -Tool docker
+    Assert-True ($composeShadowDocker.ExitCode -ne 0) 'Compose shadow fails the Docker profile'
+    Assert-True ($composeShadowDocker.Text -match 'DBDOC_DOCKER_PLUGIN_SHADOW') 'Compose shadow Docker failure has a stable code'
+    $composeShadowCmake = Invoke-Describe -FixturePath $composeShadowFixture -Tool cmake
+    Assert-Equal $composeShadowCmake.ExitCode 0 'Compose shadow does not fail the native profile'
+
+    foreach ($validatorTool in @('validator', 'pluginval')) {
+        $missingRequestedValidator = Write-Variant { param($p) $p.binaries = @($p.binaries | Where-Object { $_.name -cne $validatorTool }) }
+        $validatorDescription = Invoke-Describe -FixturePath $missingRequestedValidator -Tool $validatorTool
+        Assert-True ($validatorDescription.ExitCode -ne 0) "$validatorTool is required when explicitly routed"
+        Assert-True ($validatorDescription.Text -match 'DBDOC_TOOL_MISSING') "$validatorTool requested-validator failure has a stable code"
+    }
 
     $injectedExecution = Invoke-InjectedExecution -FixturePath $validFixture
     Assert-True ($injectedExecution.ExitCode -ne 0) 'injected probes can never launch tools'
