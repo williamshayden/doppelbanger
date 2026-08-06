@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-05
 
-**Status:** Approved in conversation on 2026-08-05; implementation planning pending written-spec review
+**Status:** Approved in conversation on 2026-08-05; independent written-spec review complete
 
 ## Goal
 
@@ -73,6 +73,8 @@ The native wrapper selects the narrowest applicable contract:
 The isolated `scripts/test_api_integration.ps1` orchestration script composes the two orthogonal profiles explicitly: it first requires `HeadlessVst3`, then requires `StatePlaneIntegration`, invokes Docker only through the state-plane wrapper route, and invokes Cargo only through the native-build wrapper route. The wrapper never guesses a profile from Cargo arguments or test names.
 
 A non-Docker command must not fail because Docker is missing, stopped, outdated, shadowed, or configured without WSL2. It must not invoke Docker merely to prove native compiler provenance. Docker commands continue to reject a shadowing Compose plugin and every nonlocked server or context. After universal native-safety and WSL2-backend preconditions, Docker error precedence is: malformed or unsafe plugin configuration, shadowing Compose provenance, missing locked binaries/Desktop, version drift, stopped engine, wrong context, then wrong server OS/architecture. Contract fixtures pin this order.
+
+When the locked Docker and Compose binaries are present and version-exact, an invalid checked-in `docker-compose.yml` emits `DBDOC_COMPOSE_CONFIG_INVALID` after version drift and before the stopped-engine check. Missing or untrusted binaries do not run Compose configuration validation.
 
 ## Shipped VST3 Contract
 
