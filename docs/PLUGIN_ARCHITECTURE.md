@@ -63,11 +63,19 @@ The API is a product dependency for new analysis, not a live audio dependency. A
 
 ## Companion Runtime Packaging
 
-Docker Compose is a development and integration-test tool, not an end-user dependency. Release packaging must install a per-user companion runtime containing pinned Postgres, PostgREST, the native worker, migrations, and a small supervisor.
+The shipped VST3 does not require WSL and does not require Docker.
+It does not require developer tooling or globally installed services, including
+Node.js, Rust, Visual Studio, CMake, Ninja, Postgres, and PostgREST. The first UI-NONE
+handoff operates from the embedded/default plan and remains usable when no
+companion is installed; it cannot create a new analysis yet. A later analysis
+feature ships a native per-user companion, never containers. Release proof runs
+the installed product on a network-disconnected clean Windows target.
+
+Docker Compose remains developer and integration-test infrastructure only. Docker/WSL developer integration and native compilation are orthogonal capabilities: neither confers nor depends on the other.
 
 The supervisor owns startup, health, version compatibility, migration, and clean shutdown. Services bind only to loopback, use a per-install credential, and store database/audio state in platform-standard user application-data directories. The plugin discovers the companion through a versioned local endpoint descriptor; it does not guess a fixed public port.
 
-The eventual one-command developer installer may orchestrate these same pinned components after clone. Public plugin installers, signing, notarization, and updates remain a separate release contract and may not rely on a globally installed database or Docker Desktop.
+The eventual one-command developer installer may orchestrate pinned developer services after clone. Public plugin installers, signing, notarization, and updates remain a separate release contract.
 
 ## Thread Ownership
 

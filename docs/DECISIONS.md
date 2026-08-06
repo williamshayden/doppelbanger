@@ -349,3 +349,14 @@ Statuses are `proposed`, `accepted`, `deferred`, `rejected`, and `superseded`. R
 - **Consequences:** C++ owns the versioned editor bridge, host parameters, DAW state, file dialogs, and background handoff; React owns presentation only. Release assets are local and offline, WebView failure cannot interrupt audio, and bridge compatibility requires native and frontend contract tests.
 - **Revisit trigger:** Reconsider IGraphics only if bounded Windows and macOS WebView prototypes fail documented host compatibility, accessibility, offline-resource, or supportability gates.
 - **GitHub:** [#5 VST3 plugin path with Ableton validation](https://github.com/williamshayden/doppelbanger/issues/5).
+
+## PD-032: Public Windows distribution is native and container-free
+- **Status:** `accepted`
+- **Date:** 2026-08-05
+- **Area:** distribution
+- **Decision:** Ship the VST3 and its later per-user companion as native Windows artifacts; WSL, Docker, developer toolchains, Postgres, and PostgREST are never musician-facing prerequisites.
+- **Rationale:** The plugin must load and perform its first UI-NONE handoff on a normal Windows host independently of the developer state plane, while later analysis remains installable without containers.
+- **Source:** [Windows distribution boundary design](superpowers/specs/2026-08-05-windows-distribution-boundary-design.md)
+- **Consequences:** Native build and Docker integration use orthogonal doctor profiles. Release evidence includes normal, delay-load, and runtime-loaded dependency closure plus a network-disconnected clean Windows target with no developer tools.
+- **Revisit trigger:** Reconsider packaging only if a native companion cannot satisfy measured product requirements and an alternative still requires no WSL, Docker, or developer tooling on the target.
+- **GitHub:** [#5 VST3 plugin path with Ableton validation](https://github.com/williamshayden/doppelbanger/issues/5).

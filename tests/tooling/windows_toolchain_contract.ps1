@@ -48,6 +48,226 @@ function Assert-FirstDiagnosticMessageLike {
     Assert-True ($actual -match $Pattern) "$Message (first diagnostic: $actual)"
 }
 
+function ConvertTo-Lf {
+    param([string]$Text)
+    return $Text.Replace("`r`n", "`n").Replace("`r", "`n")
+}
+
+function Get-MarkdownSection {
+    param([string]$Text, [string]$Heading, [string]$NextHeading)
+    $normalized = ConvertTo-Lf $Text
+    $start = $normalized.IndexOf($Heading, [StringComparison]::Ordinal)
+    if ($start -lt 0) { throw "ASSERTION FAILED: missing markdown section $Heading" }
+    $end = $normalized.IndexOf($NextHeading, $start + $Heading.Length, [StringComparison]::Ordinal)
+    if ($end -lt 0) { throw "ASSERTION FAILED: missing markdown boundary $NextHeading after $Heading" }
+    return $normalized.Substring($start, $end - $start)
+}
+
+function ConvertTo-NormalizedWhitespace {
+    param([string]$Text)
+    return [regex]::Replace((ConvertTo-Lf $Text).Trim(), '\s+', ' ')
+}
+
+function Get-MarkdownChecklistItem {
+    param([string]$Section, [string]$MatchText)
+    $normalizedSection = ConvertTo-Lf $Section
+    $items = [regex]::Matches($normalizedSection, '(?ms)^- \[ \] .*?(?=^- \[ \] |\z)')
+    $matching = @($items | Where-Object { $_.Value.Contains($MatchText) })
+    if ($matching.Count -ne 1) {
+        throw "ASSERTION FAILED: expected one checklist item containing '$MatchText', found $($matching.Count)"
+    }
+    return ConvertTo-NormalizedWhitespace $matching[0].Value
+}
+
+function Get-Sha256Hex {
+    param([string]$Text)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return (($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') }) -join '')
+    }
+    finally { $sha.Dispose() }
+}
+
+$architectureText = Get-Content -LiteralPath (Join-Path $repoRoot 'docs\PLUGIN_ARCHITECTURE.md') -Raw
+$decisionText = Get-Content -LiteralPath (Join-Path $repoRoot 'docs\DECISIONS.md') -Raw
+$workstationText = Get-Content -LiteralPath (Join-Path $repoRoot 'docs\WINDOWS_WORKSTATION.md') -Raw
+$roadmapText = Get-Content -LiteralPath (Join-Path $repoRoot 'docs\superpowers\plans\2026-08-05-windows-headless-vst3.md') -Raw
+
+$companionSection = Get-MarkdownSection $architectureText '## Companion Runtime Packaging' '## Thread Ownership'
+foreach ($required in @(
+    'does not require WSL',
+    'does not require Docker',
+    'does not require developer tooling',
+    'native per-user companion',
+    'network-disconnected clean Windows'
+)) {
+    Assert-True ($companionSection.Contains($required)) "companion packaging section contains $required"
+}
+
+$decisionLf = ConvertTo-Lf $decisionText
+$pd031Heading = '## PD-031: The first product editor uses React in an iPlug2 WebView'
+$pd032Heading = '## PD-032: Public Windows distribution is native and container-free'
+$pd031Index = $decisionLf.IndexOf($pd031Heading, [StringComparison]::Ordinal)
+$pd032Index = $decisionLf.IndexOf($pd032Heading, [StringComparison]::Ordinal)
+Assert-True ($pd031Index -ge 0 -and $pd032Index -gt $pd031Index) 'PD-032 follows PD-031'
+Assert-Equal ([regex]::Matches($decisionLf, '(?m)^## PD-032: Public Windows distribution is native and container-free$').Count) 1 'PD-032 heading occurs exactly once'
+$historicalPrefix = $decisionLf.Substring(0, $pd032Index).TrimEnd([char]10) + "`n"
+Assert-Equal (Get-Sha256Hex $historicalPrefix) 'd4f130cbf6873ad3a417f70ff50f159240778ca64983d158a793e4304e6e1b8c' 'PD-001 through PD-031 normalized prefix remains append-only'
+$expectedPd032 = ConvertTo-Lf @'
+## PD-032: Public Windows distribution is native and container-free
+- **Status:** `accepted`
+- **Date:** 2026-08-05
+- **Area:** distribution
+- **Decision:** Ship the VST3 and its later per-user companion as native Windows artifacts; WSL, Docker, developer toolchains, Postgres, and PostgREST are never musician-facing prerequisites.
+- **Rationale:** The plugin must load and perform its first UI-NONE handoff on a normal Windows host independently of the developer state plane, while later analysis remains installable without containers.
+- **Source:** [Windows distribution boundary design](superpowers/specs/2026-08-05-windows-distribution-boundary-design.md)
+- **Consequences:** Native build and Docker integration use orthogonal doctor profiles. Release evidence includes normal, delay-load, and runtime-loaded dependency closure plus a network-disconnected clean Windows target with no developer tools.
+- **Revisit trigger:** Reconsider packaging only if a native companion cannot satisfy measured product requirements and an alternative still requires no WSL, Docker, or developer tooling on the target.
+- **GitHub:** [#5 VST3 plugin path with Ableton validation](https://github.com/williamshayden/doppelbanger/issues/5).
+'@
+$nextDecisionIndex = $decisionLf.IndexOf("`n## PD-", $pd032Index + $pd032Heading.Length, [StringComparison]::Ordinal)
+$pd032End = if ($nextDecisionIndex -ge 0) { $nextDecisionIndex } else { $decisionLf.Length }
+$actualPd032 = $decisionLf.Substring($pd032Index, $pd032End - $pd032Index).TrimEnd([char]10)
+Assert-Equal $actualPd032 $expectedPd032 'PD-032 exact block occurs once after the historical prefix'
+
+$task5Section = Get-MarkdownSection $roadmapText '## Task 5: Freeze the Milestone 1 runtime contracts in canonical docs' '## Task 6: Normalize generated and submitted plans to safe centidecibels'
+Assert-True ($task5Section.Contains('Record decision `PD-033`')) 'Task 5 assigns the future runtime decision to PD-033'
+Assert-True ($task5Section.Contains('doc assertions for `PD-033`')) 'Task 5 tests the future runtime decision as PD-033'
+Assert-True (-not $task5Section.Contains('PD-032')) 'Task 5 contains no stale PD-032 runtime reference'
+$task6Section = Get-MarkdownSection $roadmapText '## Task 6: Normalize generated and submitted plans to safe centidecibels' '## Task 7: Add precomputed 10 ms smoothing and separate-input/output Rust processing'
+Assert-True ($task6Section.Contains('recorded in PD-033')) 'Task 6 normalization records the future runtime contract in PD-033'
+Assert-True (-not $task6Section.Contains('PD-032')) 'Task 6 contains no stale PD-032 runtime reference'
+
+$lockedProfiles = Get-MarkdownSection $workstationText '## Locked profiles' '## Native and container boundary'
+foreach ($required in @(
+    'Native build tools use `HeadlessVst3`',
+    'only the specifically requested validator is resolved and required',
+    'Docker commands use `StatePlaneIntegration` and never import the Visual Studio environment',
+    '`node`, `npm`, and `npx` are rejected with `DBDOC_TOOL_PROFILE_REQUIRED`',
+    'Only `Compatibility` inventories Node, WebView2, and Ableton',
+    'A successful `HeadlessVst3` result is independent of Docker state',
+    '`DBDOC_DOCKER_STOPPED` is a `StatePlaneIntegration` diagnostic'
+)) {
+    Assert-True ($lockedProfiles.Contains($required)) "locked profiles section contains $required"
+}
+
+$globalConstraints = Get-MarkdownSection $roadmapText '## Global Constraints' '## Execution Workspace Gate'
+foreach ($required in @(
+    'Native build tools use `HeadlessVst3`',
+    'only the specifically requested validator',
+    'Docker commands use `StatePlaneIntegration` and never import Visual Studio',
+    '`node`, `npm`, and `npx` reject with `DBDOC_TOOL_PROFILE_REQUIRED`'
+)) {
+    Assert-True ($globalConstraints.Contains($required)) "global constraints contain $required"
+}
+
+$task1Section = Get-MarkdownSection $roadmapText '## Task 1: Lock and diagnose the native Windows workstation' '## Task 2: Add the checksum-verified installer and provision the workstation'
+foreach ($required in @(
+    'Only `Compatibility` inventories Node, WebView2, and Ableton',
+    'Native build tools select `HeadlessVst3`',
+    'only the specifically requested validator is resolved',
+    'Docker selects `StatePlaneIntegration` and never imports `VsDevCmd.bat`',
+    '`node`, `npm`, and `npx` reject with `DBDOC_TOOL_PROFILE_REQUIRED`',
+    '`HeadlessVst3` succeeds independently of Docker state'
+)) {
+    Assert-True ($task1Section.Contains($required)) "Task 1 profile contract contains $required"
+}
+$task2Section = Get-MarkdownSection $roadmapText '## Task 2: Add the checksum-verified installer and provision the workstation' '## Task 3: Pin the state-plane containers and prove the existing ABI with MSVC'
+Assert-True ($task2Section.Contains('all compile tools pass independently of Docker state')) 'Task 2 Headless doctor expectation is Docker-independent'
+Assert-True ($task2Section.Contains('-Profile StatePlaneIntegration')) 'Task 2 uses StatePlaneIntegration for Docker diagnostics'
+Assert-True ($task2Section.Contains('`DBDOC_DOCKER_STOPPED`')) 'Task 2 assigns the stopped-Docker diagnostic explicitly'
+
+$task3Section = Get-MarkdownSection $roadmapText '## Task 3: Pin the state-plane containers and prove the existing ABI with MSVC' '## Task 4: Pin iPlug2/VST3 SDK and build Rust through offline CMake'
+foreach ($required in @(
+    '& .\scripts\doctor_windows.ps1 -Profile HeadlessVst3',
+    '& .\scripts\doctor_windows.ps1 -Profile StatePlaneIntegration',
+    'never infer Docker requirements from Cargo arguments'
+)) {
+    Assert-True ($task3Section.Contains($required)) "Task 3 integration harness contains $required"
+}
+
+$task11Section = Get-MarkdownSection $roadmapText '## Task 11: Build the production UI-NONE VST3 over the Rust processor' '## Task 12: Integrate production state with VST3 lifecycle and fixture restore'
+foreach ($required in @(
+    'reusable recursive dependency-closure gate',
+    'every native executable and DLL',
+    'normal imports',
+    'delay-load imports',
+    'AMD64 PE provenance',
+    'reject toolchain runtime DLLs that should have been statically linked',
+    'committed reviewed Windows system-DLL allowlist or contained within the bundle',
+    'Reject bundle escape through DLL search',
+    'Derive the allowlist from documented Windows platform requirements and reviewed code usage',
+    'forbid auto-populating it from the first artifact''s observed imports',
+    'current bundle is expected to contain only the plugin module',
+    'later native companion must reuse this gate'
+)) {
+    Assert-True ($task11Section.Contains($required)) "Task 11 dependency gate contains $required"
+}
+Assert-True (-not $task11Section.Contains('reject static-runtime leakage')) 'Task 11 avoids inverted static-runtime wording'
+
+$task14Section = Get-MarkdownSection $roadmapText '## Task 14: Gate the bundle with Steinberg Validator and pluginval 10' '## Task 15: Reproduce from a clean clone and complete Ableton''s UI-NONE proof'
+$task14LeakageItem = Get-MarkdownChecklistItem $task14Section 'same recursive dependency-closure inventory'
+Assert-True ($task14LeakageItem.Contains('same recursive dependency-closure inventory')) 'Task 14 carries the Task 11 dependency inventory'
+foreach ($category in @('WebView', 'Node', 'Docker', 'WSL', 'database', 'service', 'compiler')) {
+    Assert-True ($task14LeakageItem.Contains($category)) "Task 14 leakage checklist item rejects $category"
+}
+$wrappedTask14Section = $task14Section.Replace('same recursive dependency-closure inventory', "same recursive dependency-closure`n  inventory")
+$wrappedTask14Item = Get-MarkdownChecklistItem $wrappedTask14Section 'leakage from UI-NONE artifacts'
+Assert-True ($wrappedTask14Item.Contains('same recursive dependency-closure inventory')) 'Task 14 checklist extraction normalizes harmless line wrapping'
+
+$task15Section = Get-MarkdownSection $roadmapText '## Task 15: Reproduce from a clean clone and complete Ableton''s UI-NONE proof' '## Task 16: Run final gates and independent reviews'
+$cleanTargetGate = Get-MarkdownChecklistItem $task15Section 'network-disconnected clean Windows 11 x64 VM'
+foreach ($required in @(
+    'network-disconnected clean Windows 11 x64 VM with no WSL, Docker, Rust, Visual Studio, CMake, Ninja, Node, Postgres, or PostgREST',
+    'statically linked pinned Steinberg headless host',
+    'own reviewed dependency closure',
+    'safe DLL search',
+    'separate host directory',
+    'one-process Windows job',
+    'record the OS image',
+    'disabled WSL and Virtual Machine Platform features',
+    'absence of WSL distributions and container, database, and developer files, services, processes, PATH entries, and installed programs',
+    'host and bundle hashes',
+    'disconnected-network state',
+    'Exercise load, stereo processing, settled bypass, state restore, and unload',
+    'continuous image-load and process tracing from before host launch through termination',
+    'loaded-module snapshots before load and after initialization, processing, restore, and unload',
+    'every runtime-loaded module''s canonical path and hash at each phase',
+    'process tree',
+    'listeners',
+    'filesystem changes',
+    'statically reject dynamic-loader imports',
+    '`LoadLibrary*` and `GetProcAddress` are forbidden',
+    'each use is declared in a committed manifest',
+    'call-level instrumentation',
+    'requested DLL and symbol',
+    'resolved canonical module path',
+    'Reject any undeclared or uninstrumented dynamic-loader use',
+    'unresolved or undeclared module',
+    'writable, PATH, or network search location',
+    'child process',
+    'download',
+    'prerequisite installation',
+    'prerequisite installation, listener, or unexpected filesystem write'
+)) {
+    Assert-True ($cleanTargetGate.Contains($required)) "Task 15 clean-target gate contains $required"
+}
+$listenerRemovedGate = $cleanTargetGate.Replace('prerequisite installation, listener, or unexpected filesystem write', 'prerequisite installation or unexpected filesystem write')
+Assert-True ($listenerRemovedGate.Contains('listeners')) 'Task 15 listener-removal pressure case retains listener evidence'
+Assert-True (-not $listenerRemovedGate.Contains('prerequisite installation, listener, or unexpected filesystem write')) 'Task 15 rejection-specific guard detects a removed listener'
+$wrappedTask15Section = $task15Section.Replace('statically linked pinned Steinberg headless host', "statically linked pinned`n  Steinberg headless host")
+$wrappedCleanTargetGate = Get-MarkdownChecklistItem $wrappedTask15Section 'network-disconnected clean Windows 11 x64 VM'
+Assert-True ($wrappedCleanTargetGate.Contains('statically linked pinned Steinberg headless host')) 'Task 15 checklist extraction normalizes harmless line wrapping'
+
+$task16Section = Get-MarkdownSection $roadmapText '## Task 16: Run final gates and independent reviews' '## Milestone 1 Completion Criteria'
+foreach ($required in @(
+    'Rerun the UI-NONE VST3 normal-import, delay-load, runtime-loaded-module, and clean-target gates as final release evidence',
+    'their contract is reusable by the later native-companion milestone',
+    'do not require or execute companion packaging during the UI-NONE milestone'
+)) {
+    Assert-True ($task16Section.Contains($required)) "Task 16 final evidence contains $required"
+}
+
 function Read-Fixture {
     param([string]$Name)
     $path = Join-Path $fixtureRoot $Name

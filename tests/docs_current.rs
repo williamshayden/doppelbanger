@@ -112,3 +112,251 @@ fn request_lifecycles_and_plugin_reports_are_consistent() {
     assert!(roadmap.contains("This validation artifact is not the user's DAW export path"));
     assert!(roadmap.contains("stale reports are never presented as current"));
 }
+
+#[test]
+fn windows_distribution_is_native_and_container_free() {
+    let architecture = include_str!("../docs/PLUGIN_ARCHITECTURE.md");
+    let workstation = include_str!("../docs/WINDOWS_WORKSTATION.md");
+    let decisions = include_str!("../docs/DECISIONS.md");
+    let roadmap = include_str!("../docs/superpowers/plans/2026-08-05-windows-headless-vst3.md");
+    let companion = markdown_section(
+        architecture,
+        "## Companion Runtime Packaging",
+        "## Thread Ownership",
+    );
+    let locked_profiles = markdown_section(
+        workstation,
+        "## Locked profiles",
+        "## Native and container boundary",
+    );
+
+    for required in [
+        "does not require WSL",
+        "does not require Docker",
+        "does not require developer tooling",
+        "native per-user companion",
+        "network-disconnected clean Windows",
+    ] {
+        assert!(
+            companion.contains(required),
+            "missing companion distribution contract: {required}"
+        );
+    }
+    for required in [
+        "Native build tools use `HeadlessVst3`",
+        "only the specifically requested validator is resolved and required",
+        "Docker commands use `StatePlaneIntegration` and never import the Visual Studio environment",
+        "`node`, `npm`, and `npx` are rejected with `DBDOC_TOOL_PROFILE_REQUIRED`",
+        "Only `Compatibility` inventories Node, WebView2, and Ableton",
+        "A successful `HeadlessVst3` result is independent of Docker state",
+        "`DBDOC_DOCKER_STOPPED` is a `StatePlaneIntegration` diagnostic",
+    ] {
+        assert!(
+            locked_profiles.contains(required),
+            "missing locked-profile contract: {required}"
+        );
+    }
+    let pd031 = decisions
+        .find("## PD-031: The first product editor uses React in an iPlug2 WebView")
+        .expect("PD-031 must remain present");
+    let pd032_heading = "## PD-032: Public Windows distribution is native and container-free";
+    let pd032 = decisions.find(pd032_heading).expect("PD-032 must be present");
+    assert!(pd032 > pd031, "PD-032 must follow PD-031");
+    assert_eq!(decisions.matches(pd032_heading).count(), 1);
+
+    let task5 = markdown_section(
+        roadmap,
+        "## Task 5: Freeze the Milestone 1 runtime contracts in canonical docs",
+        "## Task 6: Normalize generated and submitted plans to safe centidecibels",
+    );
+    assert!(task5.contains("Record decision `PD-033`"));
+    assert!(task5.contains("doc assertions for `PD-033`"));
+    assert!(!task5.contains("PD-032"));
+    let task6 = markdown_section(
+        roadmap,
+        "## Task 6: Normalize generated and submitted plans to safe centidecibels",
+        "## Task 7: Add precomputed 10 ms smoothing and separate-input/output Rust processing",
+    );
+    assert!(task6.contains("recorded in PD-033"));
+    assert!(!task6.contains("PD-032"));
+
+    let task11 = markdown_section(
+        roadmap,
+        "## Task 11: Build the production UI-NONE VST3 over the Rust processor",
+        "## Task 12: Integrate production state with VST3 lifecycle and fixture restore",
+    );
+    let task3 = markdown_section(
+        roadmap,
+        "## Task 3: Pin the state-plane containers and prove the existing ABI with MSVC",
+        "## Task 4: Pin iPlug2/VST3 SDK and build Rust through offline CMake",
+    );
+    for required in [
+        "& .\\scripts\\doctor_windows.ps1 -Profile HeadlessVst3",
+        "& .\\scripts\\doctor_windows.ps1 -Profile StatePlaneIntegration",
+        "never infer Docker requirements from Cargo arguments",
+    ] {
+        assert!(
+            task3.contains(required),
+            "missing Task 3 integration-harness contract: {required}"
+        );
+    }
+    for required in [
+        "reusable recursive dependency-closure gate",
+        "every native executable and DLL",
+        "normal imports",
+        "delay-load imports",
+        "AMD64 PE provenance",
+        "reject toolchain runtime DLLs that should have been statically linked",
+        "committed reviewed Windows system-DLL allowlist or contained within the bundle",
+        "Reject bundle escape through DLL search",
+        "Derive the allowlist from documented Windows platform requirements and reviewed code usage",
+        "forbid auto-populating it from the first artifact's observed imports",
+        "current bundle is expected to contain only the plugin module",
+        "later native companion must reuse this gate",
+    ] {
+        assert!(
+            task11.contains(required),
+            "missing Task 11 dependency-closure contract: {required}"
+        );
+    }
+    assert!(!task11.contains("reject static-runtime leakage"));
+
+    let task14 = markdown_section(
+        roadmap,
+        "## Task 14: Gate the bundle with Steinberg Validator and pluginval 10",
+        "## Task 15: Reproduce from a clean clone and complete Ableton's UI-NONE proof",
+    );
+    let task14_leakage = markdown_checklist_item(
+        task14,
+        "same recursive dependency-closure inventory",
+    );
+    assert!(task14_leakage.contains("same recursive dependency-closure inventory"));
+    for category in [
+        "WebView", "Node", "Docker", "WSL", "database", "service", "compiler",
+    ] {
+        assert!(
+            task14_leakage.contains(category),
+            "Task 14 leakage clause must reject {category}"
+        );
+    }
+    let wrapped_task14 = task14.replace(
+        "same recursive dependency-closure inventory",
+        "same recursive dependency-closure\n  inventory",
+    );
+    let wrapped_task14_leakage =
+        markdown_checklist_item(&wrapped_task14, "leakage from UI-NONE artifacts");
+    assert!(wrapped_task14_leakage.contains("same recursive dependency-closure inventory"));
+
+    let task15 = markdown_section(
+        roadmap,
+        "## Task 15: Reproduce from a clean clone and complete Ableton's UI-NONE proof",
+        "## Task 16: Run final gates and independent reviews",
+    );
+    let clean_target_gate =
+        markdown_checklist_item(task15, "network-disconnected clean Windows 11 x64 VM");
+    for required in [
+        "network-disconnected clean Windows 11 x64 VM with no WSL, Docker, Rust, Visual Studio, CMake, Ninja, Node, Postgres, or PostgREST",
+        "statically linked pinned Steinberg headless host",
+        "own reviewed dependency closure",
+        "safe DLL search",
+        "separate host directory",
+        "one-process Windows job",
+        "record the OS image",
+        "disabled WSL and Virtual Machine Platform features",
+        "absence of WSL distributions and container, database, and developer files, services, processes, PATH entries, and installed programs",
+        "host and bundle hashes",
+        "disconnected-network state",
+        "Exercise load, stereo processing, settled bypass, state restore, and unload",
+        "continuous image-load and process tracing from before host launch through termination",
+        "loaded-module snapshots before load and after initialization, processing, restore, and unload",
+        "every runtime-loaded module's canonical path and hash at each phase",
+        "process tree",
+        "listeners",
+        "filesystem changes",
+        "statically reject dynamic-loader imports",
+        "`LoadLibrary*` and `GetProcAddress` are forbidden",
+        "each use is declared in a committed manifest",
+        "call-level instrumentation",
+        "requested DLL and symbol",
+        "resolved canonical module path",
+        "Reject any undeclared or uninstrumented dynamic-loader use",
+        "unresolved or undeclared module",
+        "writable, PATH, or network search location",
+        "child process",
+        "download",
+        "prerequisite installation",
+        "prerequisite installation, listener, or unexpected filesystem write",
+    ] {
+        assert!(
+            clean_target_gate.contains(required),
+            "missing clean-target tracing contract: {required}"
+        );
+    }
+    let listener_removed_gate = clean_target_gate.replace(
+        "prerequisite installation, listener, or unexpected filesystem write",
+        "prerequisite installation or unexpected filesystem write",
+    );
+    assert!(listener_removed_gate.contains("listeners"));
+    assert!(!listener_removed_gate
+        .contains("prerequisite installation, listener, or unexpected filesystem write"));
+    let wrapped_task15 = task15.replace(
+        "statically linked pinned Steinberg headless host",
+        "statically linked pinned\n  Steinberg headless host",
+    );
+    let wrapped_clean_target_gate = markdown_checklist_item(
+        &wrapped_task15,
+        "network-disconnected clean Windows 11 x64 VM",
+    );
+    assert!(wrapped_clean_target_gate.contains("statically linked pinned Steinberg headless host"));
+
+    let task16 = markdown_section(
+        roadmap,
+        "## Task 16: Run final gates and independent reviews",
+        "## Milestone 1 Completion Criteria",
+    );
+    for required in [
+        "Rerun the UI-NONE VST3 normal-import, delay-load, runtime-loaded-module, and clean-target gates as final release evidence",
+        "their contract is reusable by the later native-companion milestone",
+        "do not require or execute companion packaging during the UI-NONE milestone",
+    ] {
+        assert!(
+            task16.contains(required),
+            "missing Task 16 final-release contract: {required}"
+        );
+    }
+}
+
+fn markdown_section<'a>(contents: &'a str, heading: &str, next_heading: &str) -> &'a str {
+    let start = contents.find(heading).expect("markdown section must exist");
+    let end = contents[start + heading.len()..]
+        .find(next_heading)
+        .map(|offset| start + heading.len() + offset)
+        .expect("next markdown section must exist");
+    &contents[start..end]
+}
+
+fn markdown_checklist_item(section: &str, match_text: &str) -> String {
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    for line in section.split_inclusive('\n') {
+        if line.starts_with("- [ ] ") {
+            starts.push(offset);
+        }
+        offset += line.len();
+    }
+
+    let mut matching = None;
+    for (index, start) in starts.iter().copied().enumerate() {
+        let end = starts.get(index + 1).copied().unwrap_or(section.len());
+        let item = &section[start..end];
+        if item.contains(match_text) {
+            assert!(matching.is_none(), "checklist match must be unique");
+            matching = Some(normalize_markdown_whitespace(item));
+        }
+    }
+    matching.expect("matching markdown checklist item must exist")
+}
+
+fn normalize_markdown_whitespace(contents: &str) -> String {
+    contents.split_whitespace().collect::<Vec<_>>().join(" ")
+}
