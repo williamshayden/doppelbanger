@@ -12,6 +12,8 @@
   "current_user_sid": "S-1-5-21-1000-1000-1000-1001",
   "repo_owner_sid": "S-1-5-21-1000-1000-1000-1001",
   "git_global_safe_directories": [],
+  "git_global_safe_directory_inspection_valid": true,
+  "git_global_safe_directory_inspection_error": "",
   "compiler": "MSVC",
   "compiler_version": "19.44.35222",
   "vs_product_version": "17.14.37",

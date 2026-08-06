@@ -315,29 +315,92 @@ function Get-DockerComposeMetadata {
     return [pscustomobject][ordered]@{ config_dir=$configDir; extra_dirs=$extraDirs.ToArray(); candidates=$candidates; winner=[string]$winner; config_valid=$valid }
 }
 
-function Get-GlobalSafeDirectories {
-    $rootFile = if ($env:GIT_CONFIG_GLOBAL) { $env:GIT_CONFIG_GLOBAL } else { Join-Path $env:USERPROFILE '.gitconfig' }
+function Get-GlobalSafeDirectoryInspection {
+    [CmdletBinding()]
+    param([string]$RootFile, [scriptblock]$ContentReader)
+
     $results = New-Object 'Collections.Generic.List[string]'
-    $visited = @{}
-    function Read-GitConfig([string]$Path) {
-        if (-not $Path) { return }
-        $full = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path -replace '^~', $env:USERPROFILE))
-        if ($visited.ContainsKey($full) -or -not (Test-Path -LiteralPath $full -PathType Leaf)) { return }
-        $visited[$full] = $true
-        $section = ''
-        foreach ($line in Get-Content -LiteralPath $full) {
-            $trimmed = $line.Trim()
-            if ($trimmed -match '^\[([^]]+)\]$') { $section = $Matches[1].ToLowerInvariant(); continue }
-            if ($section -eq 'safe' -and $trimmed -match '^directory\s*=\s*(.+)$') { $results.Add($Matches[1].Trim().Trim('"')) }
-            if ($section -like 'include*' -and $trimmed -match '^path\s*=\s*(.+)$') {
-                $include = $Matches[1].Trim().Trim('"')
-                if (-not [IO.Path]::IsPathRooted($include)) { $include = Join-Path (Split-Path -Parent $full) $include }
-                Read-GitConfig $include
-            }
+    $active = @{}
+    $completed = @{}
+
+    function Resolve-GitConfigPath([string]$Path, [string]$BaseDirectory) {
+        if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Git config path is empty' }
+        $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+        if ($expanded -match '^~(?=$|[\\/])') { $expanded = $env:USERPROFILE + $expanded.Substring(1) }
+        if ($expanded -match '%[^%]+%') { throw "Git config path contains an unresolved environment variable: $Path" }
+        if (-not [IO.Path]::IsPathRooted($expanded)) {
+            if (-not $BaseDirectory) { $BaseDirectory = (Get-Location).Path }
+            $expanded = Join-Path $BaseDirectory $expanded
         }
+        return [IO.Path]::GetFullPath($expanded)
     }
-    try { Read-GitConfig $rootFile } catch { }
-    return $results.ToArray()
+
+    function Convert-GitConfigValue([string]$RawValue, [string]$Source, [int]$LineNumber) {
+        $value = $RawValue.Trim()
+        if ($value.StartsWith('"')) {
+            if ($value -notmatch '^"((?:[^"\\]|\\.)*)"\s*(?:[#;].*)?$') { throw "Malformed quoted Git config value at $Source`:$LineNumber" }
+            return ($Matches[1] -replace '\\"', '"' -replace '\\\\', '\')
+        }
+        return ($value -replace '\s+[#;].*$', '').Trim()
+    }
+
+    function Read-GitConfig([string]$Path, [string]$BaseDirectory, [bool]$Required) {
+        $full = Resolve-GitConfigPath -Path $Path -BaseDirectory $BaseDirectory
+        if ($active.ContainsKey($full)) { throw "Git config include cycle detected at $full" }
+        if ($completed.ContainsKey($full)) { return }
+        if (-not (Test-Path -LiteralPath $full)) {
+            if ($Required) { throw "Declared Git config file is missing: $full" }
+            return
+        }
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "Git config path is not a file: $full" }
+        $active[$full] = $true
+        try {
+            try { $lines = if ($ContentReader) { @(& $ContentReader $full) } else { @(Get-Content -LiteralPath $full -ErrorAction Stop) } }
+            catch { throw "Could not read Git config $full`: $($_.Exception.Message)" }
+            $section = ''
+            for ($index = 0; $index -lt $lines.Count; $index++) {
+                $trimmed = ([string]$lines[$index]).Trim()
+                $lineNumber = $index + 1
+                if (-not $trimmed -or $trimmed -match '^[#;]') { continue }
+                if ($trimmed -match '^\[([A-Za-z0-9.-]+)(?:\s+"(?:[^"\\]|\\.)*")?\]\s*(?:[#;].*)?$') {
+                    $section = $Matches[1].ToLowerInvariant()
+                    continue
+                }
+                if ($trimmed.StartsWith('[') -or $trimmed -notmatch '^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$') {
+                    throw "Unsupported or malformed Git config syntax at $full`:$lineNumber"
+                }
+                $key = $Matches[1].ToLowerInvariant()
+                $rawValue = if ($null -ne $Matches[2]) { [string]$Matches[2] } else { 'true' }
+                $value = Convert-GitConfigValue -RawValue $rawValue -Source $full -LineNumber $lineNumber
+                if ($section -eq 'safe' -and $key -eq 'directory') { $results.Add($value); continue }
+                if ($section -like 'include*' -and $key -eq 'path') {
+                    if ([string]::IsNullOrWhiteSpace($value)) { throw "Declared Git config include is empty at $full`:$lineNumber" }
+                    Read-GitConfig -Path $value -BaseDirectory (Split-Path -Parent $full) -Required $true
+                }
+            }
+            $completed[$full] = $true
+        }
+        finally { $active.Remove($full) }
+    }
+
+    try {
+        $rootPaths = if ($RootFile) {
+            @($RootFile)
+        }
+        elseif ($env:GIT_CONFIG_GLOBAL) {
+            @([string]$env:GIT_CONFIG_GLOBAL)
+        }
+        else {
+            if ([string]::IsNullOrWhiteSpace([string]$env:USERPROFILE)) { throw 'USERPROFILE is unavailable for global Git config inspection' }
+            $xdgRoot = if ($env:XDG_CONFIG_HOME) { [string]$env:XDG_CONFIG_HOME } else { Join-Path $env:USERPROFILE '.config' }
+            @((Join-Path $xdgRoot 'git\config'), (Join-Path $env:USERPROFILE '.gitconfig'))
+        }
+        foreach ($rootPath in $rootPaths) { Read-GitConfig -Path $rootPath -BaseDirectory '' -Required $false }
+        return [pscustomobject][ordered]@{ entries=$results.ToArray(); inspection_valid=$true; error='' }
+    }
+    catch {
+        return [pscustomobject][ordered]@{ entries=@(); inspection_valid=$false; error=$_.Exception.Message }
+    }
 }
 
 function Test-AbletonPresent {
@@ -415,13 +478,14 @@ function Get-NativeWindowsProbe {
     $validatorPath=Join-Path $repo $Lock.validators.steinberg_relative_path;$pluginvalRoot=Expand-LockedPath $Lock.validators.pluginval_root;$pluginvalPath=Join-Path $pluginvalRoot 'pluginval.exe'
     Add-BinaryProbe $binaries 'validator' $validatorPath $validatorPath $validatorPath $repo;Add-BinaryProbe $binaries 'pluginval' $pluginvalPath $pluginvalPath $pluginvalPath $pluginvalRoot
 
+    $gitInspection=Get-GlobalSafeDirectoryInspection
     $pending=(Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending')-or(Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
     $abletonRoots=if($MetadataPaths-and$MetadataPaths.AbletonRoots){@($MetadataPaths.AbletonRoots)}else{@((Join-Path $env:ProgramData 'Ableton'),(Join-Path $env:ProgramFiles 'Ableton'))}
     $ableton=Test-AbletonPresent -CandidatePaths $abletonRoots
     return [pscustomobject][ordered]@{
         metadata_only=[bool]$MetadataOnly;os=if($env:OS-eq'Windows_NT'){'Windows'}else{[Environment]::OSVersion.Platform.ToString()};arch=if($env:PROCESSOR_ARCHITECTURE-eq'AMD64'){'x86_64'}else{[string]$env:PROCESSOR_ARCHITECTURE}
         wsl=[bool]($env:WSL_DISTRO_NAME-or$env:WSL_INTEROP);wsl_present=[bool]$wslPresent;wsl_distro_name=[string]$env:WSL_DISTRO_NAME;wsl_interop=[string]$env:WSL_INTEROP;wsl_version=$wslVersion;ancestors=@(Get-ProcessAncestors)
-        repo_path=$repo;repo_filesystem=$filesystem;current_user_sid=$currentSid;repo_owner_sid=$ownerSid;git_global_safe_directories=@(Get-GlobalSafeDirectories)
+        repo_path=$repo;repo_filesystem=$filesystem;current_user_sid=$currentSid;repo_owner_sid=$ownerSid;git_global_safe_directories=@($gitInspection.entries);git_global_safe_directory_inspection_valid=[bool]$gitInspection.inspection_valid;git_global_safe_directory_inspection_error=[string]$gitInspection.error
         compiler=if(Test-PhysicalLeaf $clPath){'MSVC'}else{''};compiler_version=if($MetadataOnly-and(Test-PhysicalLeaf $clPath)){$Lock.visual_studio.msvc_version_prefix}elseif($clInfo-match'Compiler Version ([0-9.]+)'){$Matches[1]}else{''}
         vs_product_version=$vs.product_version;vs_installation_version=$vs.installation_version;vs_instance_path=$vs.instance_path;msvc_component=$vs.msvc_component;windows_sdk_component=$vs.windows_sdk_component;windows_sdk_target=if($sdkInstalled){$sdkTarget}else{''}
         rust_version=if($MetadataOnly-and$rust.rustc){$Lock.rust.toolchain}elseif($rustInfo-match'rustc ([0-9.]+)'){$Matches[1]}else{''};rust_target=if($MetadataOnly-and$rust.rustc){$Lock.rust.target}elseif($rustInfo-match'(?m)^host:\s*(\S+)'){$Matches[1]}else{''};rust_toolchain_root=$rust.root;rust_components=[pscustomobject]@{cargo=$rust.cargo;rustfmt=$rust.rustfmt;clippy=$rust.clippy;metadata_valid=$rust.base_valid;installer_version=$rust.installer_version;channel_version=$rust.channel_version}
@@ -508,6 +572,9 @@ function Test-NativeWindowsProbe {
         [string]$Probe.current_user_sid -cne [string]$Probe.repo_owner_sid) {
         Add-Error 'DBDOC_GIT_OWNERSHIP_INVALID' 'Repository directory owner SID does not match the current Windows user SID'
     }
+    if ($Probe.git_global_safe_directory_inspection_valid -ne $true) {
+        Add-Error 'DBDOC_GIT_CONFIG_INSPECTION_FAILED' "Global Git config inspection did not complete: $($Probe.git_global_safe_directory_inspection_error)"
+    }
     foreach ($safeEntry in @($Probe.git_global_safe_directories)) {
         if (Test-SafeDirectoryCoversRepo -Entry ([string]$safeEntry) -RepoPath ([string]$Probe.repo_path)) {
             Add-Error 'DBDOC_GIT_SAFE_DIRECTORY_BYPASS' "Global Git safe.directory bypass covers this repository: $safeEntry"
@@ -555,6 +622,14 @@ function Test-NativeWindowsProbe {
             Check-Exact 'Docker context' $Probe.docker_context $Lock.docker.context
             Check-Exact 'Docker server OS' $Probe.docker_server_os $Lock.docker.server_os
             Check-Exact 'Docker server architecture' $Probe.docker_server_arch $Lock.docker.server_arch
+        }
+    }
+
+    if ($strict) {
+        foreach ($requiredMsvcTool in @('cl', 'link', 'lib', 'dumpbin')) {
+            if (@($Probe.binaries | Where-Object { $_.name -ceq $requiredMsvcTool }).Count -eq 0) {
+                Add-Error 'DBDOC_TOOL_MISSING' "Required exact MSVC tool is missing: $requiredMsvcTool.exe"
+            }
         }
     }
 

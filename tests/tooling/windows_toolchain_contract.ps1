@@ -191,6 +191,17 @@ $safeDirectoryProbe = Read-Fixture 'windows-native-valid.json'
 $safeDirectoryProbe.git_global_safe_directories = @('*')
 Assert-Code (Test-NativeWindowsProbe -Probe $safeDirectoryProbe -Lock $lock -Profile HeadlessVst3) 'DBDOC_GIT_SAFE_DIRECTORY_BYPASS'
 
+$failedGitInspectionProbe = Read-Fixture 'windows-native-valid.json'
+$failedGitInspectionProbe.git_global_safe_directory_inspection_valid = $false
+$failedGitInspectionProbe.git_global_safe_directory_inspection_error = 'simulated read failure'
+Assert-Code (Test-NativeWindowsProbe -Probe $failedGitInspectionProbe -Lock $lock -Profile HeadlessVst3) 'DBDOC_GIT_CONFIG_INSPECTION_FAILED'
+
+foreach ($requiredMsvcTool in @('cl', 'link', 'lib', 'dumpbin')) {
+    $missingMsvcProbe = Read-Fixture 'windows-native-valid.json'
+    $missingMsvcProbe.binaries = @($missingMsvcProbe.binaries | Where-Object { $_.name -cne $requiredMsvcTool })
+    Assert-Code (Test-NativeWindowsProbe -Probe $missingMsvcProbe -Lock $lock -Profile HeadlessVst3) 'DBDOC_TOOL_MISSING'
+}
+
 $compatProbe = Read-Fixture 'windows-native-valid.json'
 $compatProbe.compiler_version = '19.43.34810'
 $compatResult = Test-NativeWindowsProbe -Probe $compatProbe -Lock $lock -Profile Compatibility
@@ -249,6 +260,70 @@ $testTemp = Join-Path $varRoot ("tooling-contract-{0}" -f [Guid]::NewGuid().ToSt
 [IO.Directory]::CreateDirectory($testTemp) | Out-Null
 $script:testTemp = $testTemp
 try {
+    $absentGlobalConfig = Join-Path $testTemp 'absent-global.gitconfig'
+    $absentGitInspection = Get-GlobalSafeDirectoryInspection -RootFile $absentGlobalConfig
+    Assert-True $absentGitInspection.inspection_valid 'absent global Git config is a valid empty inspection'
+    Assert-Equal $absentGitInspection.entries.Count 0 'absent global Git config has no safe.directory entries'
+
+    $xdgUserProfile = Join-Path $testTemp 'xdg-user-profile'
+    $xdgConfigHome = Join-Path $testTemp 'xdg-config-home'
+    $xdgGitDirectory = Join-Path $xdgConfigHome 'git'
+    [IO.Directory]::CreateDirectory($xdgUserProfile) | Out-Null
+    [IO.Directory]::CreateDirectory($xdgGitDirectory) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $xdgGitDirectory 'config'), "[safe]`ndirectory = *`n")
+    $savedUserProfile = $env:USERPROFILE
+    $savedXdgConfigHome = $env:XDG_CONFIG_HOME
+    $savedGitConfigGlobal = $env:GIT_CONFIG_GLOBAL
+    try {
+        [Environment]::SetEnvironmentVariable('USERPROFILE', $xdgUserProfile, 'Process')
+        [Environment]::SetEnvironmentVariable('XDG_CONFIG_HOME', $xdgConfigHome, 'Process')
+        [Environment]::SetEnvironmentVariable('GIT_CONFIG_GLOBAL', $null, 'Process')
+        $xdgGitInspection = Get-GlobalSafeDirectoryInspection
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable('USERPROFILE', $savedUserProfile, 'Process')
+        [Environment]::SetEnvironmentVariable('XDG_CONFIG_HOME', $savedXdgConfigHome, 'Process')
+        [Environment]::SetEnvironmentVariable('GIT_CONFIG_GLOBAL', $savedGitConfigGlobal, 'Process')
+    }
+    Assert-True $xdgGitInspection.inspection_valid 'XDG Git config inspection is valid when home config is absent'
+    Assert-Equal $xdgGitInspection.entries.Count 1 'XDG Git config contributes one safe.directory entry'
+    Assert-Equal $xdgGitInspection.entries[0] '*' 'XDG safe.directory is visible when home config is absent'
+
+    $directoryGlobalConfig = Join-Path $testTemp 'directory-global.gitconfig'
+    [IO.Directory]::CreateDirectory($directoryGlobalConfig) | Out-Null
+    $directoryGitInspection = Get-GlobalSafeDirectoryInspection -RootFile $directoryGlobalConfig
+    Assert-True (-not $directoryGitInspection.inspection_valid) 'existing non-file global Git config path fails inspection closed'
+
+    $knownGlobalConfig = Join-Path $testTemp 'known-global.gitconfig'
+    [IO.File]::WriteAllText($knownGlobalConfig, "[safe]`ndirectory = `"$repoRoot`"`n")
+    $knownGitInspection = Get-GlobalSafeDirectoryInspection -RootFile $knownGlobalConfig
+    Assert-True $knownGitInspection.inspection_valid 'known global Git config parses successfully'
+    Assert-Equal $knownGitInspection.entries.Count 1 'known global Git config exposes one safe.directory entry'
+    Assert-Equal $knownGitInspection.entries[0] $repoRoot 'known safe.directory value is preserved'
+
+    $readerFailureConfig = Join-Path $testTemp 'reader-failure.gitconfig'
+    [IO.File]::WriteAllText($readerFailureConfig, "[safe]`ndirectory = C:\\should-not-be-read`n")
+    $readerFailureInspection = Get-GlobalSafeDirectoryInspection -RootFile $readerFailureConfig -ContentReader { param($Path) throw 'simulated access failure' }
+    Assert-True (-not $readerFailureInspection.inspection_valid) 'global Git config reader exception fails inspection closed'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($readerFailureInspection.error)) 'global Git config reader exception records an error'
+
+    $malformedGlobalConfig = Join-Path $testTemp 'malformed-global.gitconfig'
+    [IO.File]::WriteAllText($malformedGlobalConfig, "[safe`ndirectory = *`n")
+    $malformedGitInspection = Get-GlobalSafeDirectoryInspection -RootFile $malformedGlobalConfig
+    Assert-True (-not $malformedGitInspection.inspection_valid) 'malformed global Git config fails inspection closed'
+
+    $missingIncludeConfig = Join-Path $testTemp 'missing-include-global.gitconfig'
+    [IO.File]::WriteAllText($missingIncludeConfig, "[include]`npath = missing-declared-include.gitconfig`n")
+    $missingIncludeInspection = Get-GlobalSafeDirectoryInspection -RootFile $missingIncludeConfig
+    Assert-True (-not $missingIncludeInspection.inspection_valid) 'missing declared Git config include fails inspection closed'
+
+    $cycleConfigOne = Join-Path $testTemp 'cycle-one.gitconfig'
+    $cycleConfigTwo = Join-Path $testTemp 'cycle-two.gitconfig'
+    [IO.File]::WriteAllText($cycleConfigOne, "[include]`npath = cycle-two.gitconfig`n")
+    [IO.File]::WriteAllText($cycleConfigTwo, "[include]`npath = cycle-one.gitconfig`n")
+    $cycleInspection = Get-GlobalSafeDirectoryInspection -RootFile $cycleConfigOne
+    Assert-True (-not $cycleInspection.inspection_valid) 'global Git config include cycle fails inspection closed'
+
     $fakeRustupHome = Join-Path $testTemp 'rustup-home'
     $fakeRustRoot = Join-Path $fakeRustupHome "toolchains\$($lock.rust.toolchain_directory)"
     $fakeRustlib = Join-Path $fakeRustRoot 'lib\rustlib'
@@ -415,6 +490,13 @@ try {
         $shadow = Invoke-Describe -FixturePath $shadowPath -Tool $tool
         Assert-True ($shadow.ExitCode -ne 0) "$tool ambient shadow is rejected"
         Assert-True ($shadow.Text -match 'DBDOC_TOOL_PATH_SHADOW') "$tool shadow has stable code"
+    }
+
+    foreach ($requiredMsvcTool in @('cl', 'link', 'lib', 'dumpbin')) {
+        $missingMsvcPath = Write-Variant { param($p) $p.binaries = @($p.binaries | Where-Object { $_.name -cne $requiredMsvcTool }) }
+        $missingMsvcDescribe = Invoke-Describe -FixturePath $missingMsvcPath -Tool $requiredMsvcTool
+        Assert-True ($missingMsvcDescribe.ExitCode -ne 0) "-Describe rejects missing exact $requiredMsvcTool.exe"
+        Assert-True ($missingMsvcDescribe.Text -match 'DBDOC_TOOL_MISSING') "missing $requiredMsvcTool.exe has a stable code"
     }
 
     $compose = Invoke-Describe -FixturePath (Join-Path $fixtureRoot 'windows-compose-shadow-invalid.json') -Tool docker
