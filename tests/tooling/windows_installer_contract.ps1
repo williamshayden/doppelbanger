@@ -1228,6 +1228,154 @@ try {
     # Audit repair: native preflight is mandatory before any mutation.
     $nativeProbe = [pscustomobject]@{ os = 'Windows'; arch = 'x86_64'; wsl = $false; wsl_distro_name = ''; wsl_interop = ''; ancestors = @('powershell.exe', 'explorer.exe') }
     Assert-True (Assert-NativeInstallEnvironment -Probe $nativeProbe) 'native Windows x64 probe is accepted'
+
+    # Runtime ancestry repair: a canonical Explorer whose historical parent row is gone is one narrow trusted boundary.
+    $nativeLookupFactory = {
+        param([Collections.IDictionary]$Rows, $Calls, [int]$ThrowOnProcessId = 0)
+        $lookupRows = $Rows
+        $lookupCalls = $Calls
+        $lookupThrowId = $ThrowOnProcessId
+        return {
+            param([int]$TargetProcessId)
+            $lookupCalls.Add($TargetProcessId)
+            if ($TargetProcessId -eq $lookupThrowId) { throw "fixture lookup denied for PID $TargetProcessId" }
+            if ($lookupRows.Contains($TargetProcessId)) { return $lookupRows[$TargetProcessId] }
+            return $null
+        }.GetNewClosure()
+    }
+    $ancestryRtkId = [int]$PID + 10001
+    $ancestryPowerShellId = [int]$PID + 10002
+    $ancestryCodexId = [int]$PID + 10003
+    $ancestryChatGptId = [int]$PID + 10004
+    $ancestryExplorerId = [int]$PID + 10005
+    $ancestryMissingExplorerParentId = [int]$PID + 10006
+    $canonicalExplorerRows = @{}
+    $canonicalExplorerRows[[int]$PID] = [pscustomobject][ordered]@{ ProcessId = [int]$PID; ParentProcessId = $ancestryRtkId; Name = 'powershell.exe'; ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' }
+    $canonicalExplorerRows[$ancestryRtkId] = [pscustomobject][ordered]@{ ProcessId = $ancestryRtkId; ParentProcessId = $ancestryPowerShellId; Name = 'rtk.exe'; ExecutablePath = 'C:\Users\fixture\AppData\Local\rtk\rtk.exe' }
+    $canonicalExplorerRows[$ancestryPowerShellId] = [pscustomobject][ordered]@{ ProcessId = $ancestryPowerShellId; ParentProcessId = $ancestryCodexId; Name = 'powershell.exe'; ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' }
+    $canonicalExplorerRows[$ancestryCodexId] = [pscustomobject][ordered]@{ ProcessId = $ancestryCodexId; ParentProcessId = $ancestryChatGptId; Name = 'codex.exe'; ExecutablePath = 'C:\Program Files\Codex\codex.exe' }
+    $canonicalExplorerRows[$ancestryChatGptId] = [pscustomobject][ordered]@{ ProcessId = $ancestryChatGptId; ParentProcessId = $ancestryExplorerId; Name = 'ChatGPT.exe'; ExecutablePath = 'C:\Program Files\WindowsApps\OpenAI.ChatGPT_fixture\ChatGPT.exe' }
+    $canonicalExplorerRows[$ancestryExplorerId] = [pscustomobject][ordered]@{ ProcessId = $ancestryExplorerId; ParentProcessId = $ancestryMissingExplorerParentId; Name = 'Explorer.EXE'; ExecutablePath = 'C:\Windows\Explorer.EXE' }
+    $canonicalExplorerCalls = New-Object 'Collections.Generic.List[int]'
+    $canonicalExplorerProbe = $null
+    $canonicalExplorerError = ''
+    try {
+        $canonicalExplorerProbe = Get-NativeInstallEnvironmentProbe -ProcessLookup (& $nativeLookupFactory $canonicalExplorerRows $canonicalExplorerCalls) -WindowsDirectory 'C:\Windows'
+    }
+    catch { $canonicalExplorerError = $_.Exception.Message }
+    Assert-Equal $canonicalExplorerError '' 'exact Codex/rtk/ChatGPT/canonical-Explorer chain accepts only the missing historical Explorer parent boundary'
+    Assert-Equal ($canonicalExplorerCalls -join ',') "${PID},$ancestryRtkId,$ancestryPowerShellId,$ancestryCodexId,$ancestryChatGptId,$ancestryExplorerId,$ancestryMissingExplorerParentId" 'canonical Explorer parent PID is queried before the ancestry walk terminates'
+    Assert-Equal (@($canonicalExplorerProbe.ancestors) -join ',') 'powershell.exe,rtk.exe,powershell.exe,codex.exe,ChatGPT.exe,Explorer.EXE' 'accepted ancestry retains canonical Explorer and the complete resolved Codex launch chain'
+    Assert-True (Assert-NativeInstallEnvironment -Probe $canonicalExplorerProbe) 'accepted canonical Explorer boundary still passes the independent native environment validator'
+
+    $missingBelowCodexId = [int]$PID + 10103
+    $missingBelowCodexParentId = [int]$PID + 10104
+    $missingBelowCodexRows = @{}
+    $missingBelowCodexRows[[int]$PID] = [pscustomobject][ordered]@{ ProcessId = [int]$PID; ParentProcessId = $ancestryRtkId; Name = 'powershell.exe'; ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' }
+    $missingBelowCodexRows[$ancestryRtkId] = [pscustomobject][ordered]@{ ProcessId = $ancestryRtkId; ParentProcessId = $missingBelowCodexId; Name = 'rtk.exe'; ExecutablePath = 'C:\Users\fixture\AppData\Local\rtk\rtk.exe' }
+    $missingBelowCodexRows[$missingBelowCodexId] = [pscustomobject][ordered]@{ ProcessId = $missingBelowCodexId; ParentProcessId = $missingBelowCodexParentId; Name = 'codex.exe'; ExecutablePath = 'C:\Program Files\Codex\codex.exe' }
+    $missingBelowCodexCalls = New-Object 'Collections.Generic.List[int]'
+    Assert-ThrowsCode {
+        Get-NativeInstallEnvironmentProbe -ProcessLookup (& $nativeLookupFactory $missingBelowCodexRows $missingBelowCodexCalls) -WindowsDirectory 'C:\Windows' | Out-Null
+    } 'DBINST_NATIVE_WINDOWS_REQUIRED' 'missing ancestry below rtk/Codex remains fail-closed'
+    Assert-Equal ($missingBelowCodexCalls -join ',') "${PID},$ancestryRtkId,$missingBelowCodexId,$missingBelowCodexParentId" 'missing non-Explorer parent is queried before failure'
+
+    foreach ($untrustedExplorerCase in @(
+        [pscustomobject]@{ label = 'pathless'; name = 'explorer.exe'; path = '' },
+        [pscustomobject]@{ label = 'noncanonical path'; name = 'explorer.exe'; path = 'C:\Windows\System32\explorer.exe' },
+        [pscustomobject]@{ label = 'nonexact alias path'; name = 'explorer.exe'; path = 'C:\Windows\System32\..\explorer.exe' },
+        [pscustomobject]@{ label = 'wrong process name'; name = 'not-explorer.exe'; path = 'C:\Windows\explorer.exe' }
+    )) {
+        $untrustedExplorerRows = @{}
+        $untrustedExplorerRows[[int]$PID] = [pscustomobject][ordered]@{ ProcessId = [int]$PID; ParentProcessId = $ancestryExplorerId; Name = 'powershell.exe'; ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' }
+        $untrustedExplorerRows[$ancestryExplorerId] = [pscustomobject][ordered]@{ ProcessId = $ancestryExplorerId; ParentProcessId = $ancestryMissingExplorerParentId; Name = [string]$untrustedExplorerCase.name; ExecutablePath = [string]$untrustedExplorerCase.path }
+        $untrustedExplorerCalls = New-Object 'Collections.Generic.List[int]'
+        Assert-ThrowsCode {
+            Get-NativeInstallEnvironmentProbe -ProcessLookup (& $nativeLookupFactory $untrustedExplorerRows $untrustedExplorerCalls) -WindowsDirectory 'C:\Windows' | Out-Null
+        } 'DBINST_NATIVE_WINDOWS_REQUIRED' "$($untrustedExplorerCase.label) Explorer with a missing parent remains fail-closed"
+        Assert-Equal ($untrustedExplorerCalls -join ',') "${PID},$ancestryExplorerId,$ancestryMissingExplorerParentId" "$($untrustedExplorerCase.label) Explorer parent is queried before failure"
+    }
+
+    $unreadableExplorerParentCalls = New-Object 'Collections.Generic.List[int]'
+    Assert-ThrowsCode {
+        Get-NativeInstallEnvironmentProbe -ProcessLookup (& $nativeLookupFactory $canonicalExplorerRows $unreadableExplorerParentCalls $ancestryMissingExplorerParentId) -WindowsDirectory 'C:\Windows' | Out-Null
+    } 'DBINST_NATIVE_WINDOWS_REQUIRED' 'an unreadable canonical Explorer parent remains fail-closed rather than being treated as a missing historical row'
+
+    $ancestryCycleId = [int]$PID + 10200
+    $ancestryCycleRows = @{}
+    $ancestryCycleRows[[int]$PID] = [pscustomobject][ordered]@{ ProcessId = [int]$PID; ParentProcessId = $ancestryCycleId; Name = 'powershell.exe'; ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' }
+    $ancestryCycleRows[$ancestryCycleId] = [pscustomobject][ordered]@{ ProcessId = $ancestryCycleId; ParentProcessId = [int]$PID; Name = 'rtk.exe'; ExecutablePath = 'C:\Users\fixture\AppData\Local\rtk\rtk.exe' }
+    $ancestryCycleCalls = New-Object 'Collections.Generic.List[int]'
+    Assert-ThrowsCode {
+        Get-NativeInstallEnvironmentProbe -ProcessLookup (& $nativeLookupFactory $ancestryCycleRows $ancestryCycleCalls) -WindowsDirectory 'C:\Windows' | Out-Null
+    } 'DBINST_NATIVE_WINDOWS_REQUIRED' 'a live process ancestry PID cycle fails closed'
+    Assert-Equal ($ancestryCycleCalls -join ',') "${PID},$ancestryCycleId" 'cycle detection rejects a repeated PID before looking it up again'
+
+    $depthRows = @{}
+    $depthCurrentId = [int]$PID
+    for ($depthIndex = 0; $depthIndex -lt 31; $depthIndex++) {
+        $depthParentId = [int]$PID + 11000 + $depthIndex
+        $depthRows[$depthCurrentId] = [pscustomobject][ordered]@{
+            ProcessId = $depthCurrentId
+            ParentProcessId = $depthParentId
+            Name = if ($depthIndex -eq 0) { 'powershell.exe' } else { "ancestor-$depthIndex.exe" }
+            ExecutablePath = "C:\fixture\ancestor-$depthIndex.exe"
+        }
+        $depthCurrentId = $depthParentId
+    }
+    $depthExplorerId = $depthCurrentId
+    $depthWslId = [int]$PID + 12000
+    $depthRows[$depthExplorerId] = [pscustomobject][ordered]@{ ProcessId = $depthExplorerId; ParentProcessId = $depthWslId; Name = 'explorer.exe'; ExecutablePath = 'C:\Windows\explorer.exe' }
+    $depthRows[$depthWslId] = [pscustomobject][ordered]@{ ProcessId = $depthWslId; ParentProcessId = 0; Name = 'wsl.exe'; ExecutablePath = 'C:\Windows\System32\wsl.exe' }
+    $depthCalls = New-Object 'Collections.Generic.List[int]'
+    Assert-ThrowsCode {
+        Get-NativeInstallEnvironmentProbe -ProcessLookup (& $nativeLookupFactory $depthRows $depthCalls) -WindowsDirectory 'C:\Windows' | Out-Null
+    } 'DBINST_NATIVE_WINDOWS_REQUIRED' 'a live record beyond the 32-resolved-process limit fails closed'
+    Assert-Equal $depthCalls.Count 33 'depth exhaustion still queries the canonical Explorer parent before failing'
+    Assert-Equal $depthCalls[$depthCalls.Count - 1] $depthWslId 'depth exhaustion cannot hide a live WSL parent immediately above canonical Explorer'
+
+    foreach ($malformedProcessCase in @(
+        [pscustomobject]@{ label = 'missing ProcessId'; row = [pscustomobject][ordered]@{ ParentProcessId = 0; Name = 'powershell.exe'; ExecutablePath = 'C:\fixture\powershell.exe' } },
+        [pscustomobject]@{ label = 'mismatched ProcessId'; row = [pscustomobject][ordered]@{ ProcessId = ([int]$PID + 1); ParentProcessId = 0; Name = 'powershell.exe'; ExecutablePath = 'C:\fixture\powershell.exe' } },
+        [pscustomobject]@{ label = 'non-lossless ProcessId'; row = [pscustomobject][ordered]@{ ProcessId = "00$PID"; ParentProcessId = 0; Name = 'powershell.exe'; ExecutablePath = 'C:\fixture\powershell.exe' } },
+        [pscustomobject]@{ label = 'missing ParentProcessId'; row = [pscustomobject][ordered]@{ ProcessId = [int]$PID; Name = 'powershell.exe'; ExecutablePath = 'C:\fixture\powershell.exe' } },
+        [pscustomobject]@{ label = 'negative ParentProcessId'; row = [pscustomobject][ordered]@{ ProcessId = [int]$PID; ParentProcessId = -1; Name = 'powershell.exe'; ExecutablePath = 'C:\fixture\powershell.exe' } },
+        [pscustomobject]@{ label = 'out-of-range ParentProcessId'; row = [pscustomobject][ordered]@{ ProcessId = [int]$PID; ParentProcessId = '4294967295'; Name = 'powershell.exe'; ExecutablePath = 'C:\fixture\powershell.exe' } },
+        [pscustomobject]@{ label = 'blank Name'; row = [pscustomobject][ordered]@{ ProcessId = [int]$PID; ParentProcessId = 0; Name = '   '; ExecutablePath = 'C:\fixture\powershell.exe' } }
+    )) {
+        $malformedProcessRows = @{}
+        $malformedProcessRows[[int]$PID] = $malformedProcessCase.row
+        $malformedProcessCalls = New-Object 'Collections.Generic.List[int]'
+        Assert-ThrowsCode {
+            Get-NativeInstallEnvironmentProbe -ProcessLookup (& $nativeLookupFactory $malformedProcessRows $malformedProcessCalls) -WindowsDirectory 'C:\Windows' | Out-Null
+        } 'DBINST_NATIVE_WINDOWS_REQUIRED' "$($malformedProcessCase.label) process row fails closed"
+    }
+
+    $liveWslId = [int]$PID + 10201
+    $liveWslRows = @{}
+    $liveWslRows[[int]$PID] = [pscustomobject][ordered]@{ ProcessId = [int]$PID; ParentProcessId = $ancestryExplorerId; Name = 'powershell.exe'; ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' }
+    $liveWslRows[$ancestryExplorerId] = [pscustomobject][ordered]@{ ProcessId = $ancestryExplorerId; ParentProcessId = $liveWslId; Name = 'explorer.exe'; ExecutablePath = 'C:\Windows\explorer.exe' }
+    $liveWslRows[$liveWslId] = [pscustomobject][ordered]@{ ProcessId = $liveWslId; ParentProcessId = 0; Name = 'wsl.exe'; ExecutablePath = 'C:\Windows\System32\wsl.exe' }
+    $liveWslCalls = New-Object 'Collections.Generic.List[int]'
+    $liveWslProbe = Get-NativeInstallEnvironmentProbe -ProcessLookup (& $nativeLookupFactory $liveWslRows $liveWslCalls) -WindowsDirectory 'C:\Windows'
+    Assert-Equal ($liveWslCalls -join ',') "${PID},$ancestryExplorerId,$liveWslId" 'a live Explorer parent is traversed instead of accepting the canonical Explorer boundary early'
+    Assert-ThrowsCode { Assert-NativeInstallEnvironment -Probe $liveWslProbe | Out-Null } 'DBINST_NATIVE_WINDOWS_REQUIRED' 'live WSL launcher above canonical Explorer remains detectable and rejected'
+
+    $savedWslDistroNameForAncestry = $env:WSL_DISTRO_NAME
+    $savedWslInteropForAncestry = $env:WSL_INTEROP
+    try {
+        $env:WSL_DISTRO_NAME = 'Ubuntu-fixture'
+        $env:WSL_INTEROP = '\\wsl.localhost\fixture\interop'
+        $markerExplorerCalls = New-Object 'Collections.Generic.List[int]'
+        $markerExplorerProbe = Get-NativeInstallEnvironmentProbe -ProcessLookup (& $nativeLookupFactory $canonicalExplorerRows $markerExplorerCalls) -WindowsDirectory 'C:\Windows'
+        Assert-Equal (@($markerExplorerProbe.ancestors) -join ',') 'powershell.exe,rtk.exe,powershell.exe,codex.exe,ChatGPT.exe,Explorer.EXE' 'WSL marker fixture still reaches the accepted canonical Explorer boundary'
+        Assert-ThrowsCode { Assert-NativeInstallEnvironment -Probe $markerExplorerProbe | Out-Null } 'DBINST_NATIVE_WINDOWS_REQUIRED' 'WSL environment markers independently reject an otherwise accepted canonical Explorer chain'
+    }
+    finally {
+        $env:WSL_DISTRO_NAME = $savedWslDistroNameForAncestry
+        $env:WSL_INTEROP = $savedWslInteropForAncestry
+    }
+
     $wslParentProbe = $nativeProbe | ConvertTo-Json -Depth 4 | ConvertFrom-Json
     $wslParentProbe.ancestors = @('powershell.exe', 'wslhost.exe')
     $script:wslBlockedInvoke = 0

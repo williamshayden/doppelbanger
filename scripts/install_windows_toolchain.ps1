@@ -515,17 +515,92 @@ function Assert-NativeInstallEnvironment {
 }
 
 function Get-NativeInstallEnvironmentProbe {
-    $ancestors = New-Object 'Collections.Generic.List[string]'
-    $processId = $PID
-    for ($index = 0; $index -lt 32 -and $processId -gt 0; $index++) {
-        try { $process = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction Stop }
-        catch {
-            try { $process = Get-WmiObject Win32_Process -Filter "ProcessId=$processId" -ErrorAction Stop }
-            catch { Stop-Installer 'DBINST_NATIVE_WINDOWS_REQUIRED' 'native process ancestry could not be read completely' }
+    [CmdletBinding()]
+    param(
+        [scriptblock]$ProcessLookup,
+        [string]$WindowsDirectory = [string]$env:WINDIR
+    )
+    if (-not $ProcessLookup) {
+        $ProcessLookup = {
+            param([int]$TargetProcessId)
+            try { return Get-CimInstance Win32_Process -Filter "ProcessId=$TargetProcessId" -ErrorAction Stop }
+            catch {
+                try { return Get-WmiObject Win32_Process -Filter "ProcessId=$TargetProcessId" -ErrorAction Stop }
+                catch { throw }
+            }
         }
-        if (-not $process) { Stop-Installer 'DBINST_NATIVE_WINDOWS_REQUIRED' 'native process ancestry returned an unknown process' }
-        $ancestors.Add([string]$process.Name)
-        $processId = [int]$process.ParentProcessId
+    }
+    $expectedExplorerPath = ''
+    if (-not [string]::IsNullOrWhiteSpace($WindowsDirectory)) {
+        try {
+            $suppliedWindowsDirectory = ([string]$WindowsDirectory).TrimEnd('\')
+            $canonicalWindowsDirectory = [IO.Path]::GetFullPath([string]$WindowsDirectory).TrimEnd('\')
+            if (
+                [IO.Path]::IsPathRooted($suppliedWindowsDirectory) -and
+                [StringComparer]::OrdinalIgnoreCase.Equals($suppliedWindowsDirectory, $canonicalWindowsDirectory)
+            ) { $expectedExplorerPath = Join-Path $suppliedWindowsDirectory 'explorer.exe' }
+        }
+        catch { $expectedExplorerPath = '' }
+    }
+    $parseProcessId = {
+        param($Value, [bool]$AllowZero)
+        if ($null -eq $Value) { return [pscustomobject]@{ valid = $false; value = 0 } }
+        $text = [string]$Value
+        if ($text -cnotmatch '^(?:0|[1-9][0-9]*)$') { return [pscustomobject]@{ valid = $false; value = 0 } }
+        try { $parsedValue = [uint64]::Parse($text, [Globalization.CultureInfo]::InvariantCulture) }
+        catch { return [pscustomobject]@{ valid = $false; value = 0 } }
+        if ($parsedValue -gt [int]::MaxValue -or (-not $AllowZero -and $parsedValue -eq 0)) {
+            return [pscustomobject]@{ valid = $false; value = 0 }
+        }
+        return [pscustomobject]@{ valid = $true; value = [int]$parsedValue }
+    }
+    $ancestors = New-Object 'Collections.Generic.List[string]'
+    $initialProcessId = & $parseProcessId $PID $false
+    if (-not $initialProcessId.valid) { Stop-Installer 'DBINST_NATIVE_WINDOWS_REQUIRED' 'native process ancestry started with an invalid process ID' }
+    $processId = [int]$initialProcessId.value
+    $visitedProcessIds = New-Object 'Collections.Generic.HashSet[int]'
+    $resolvedProcessCount = 0
+    $previousProcessName = ''
+    $previousExecutablePath = ''
+    $previousParentProcessId = -1
+    while ($processId -gt 0) {
+        if (-not $visitedProcessIds.Add($processId)) { Stop-Installer 'DBINST_NATIVE_WINDOWS_REQUIRED' 'native process ancestry contains a process ID cycle' }
+        try { $resolvedProcesses = @(& $ProcessLookup $processId) }
+        catch { Stop-Installer 'DBINST_NATIVE_WINDOWS_REQUIRED' 'native process ancestry could not be read completely' }
+        $missingProcess = $resolvedProcesses.Count -eq 0 -or ($resolvedProcesses.Count -eq 1 -and $null -eq $resolvedProcesses[0])
+        if ($missingProcess) {
+            if (
+                $previousParentProcessId -eq $processId -and
+                $previousProcessName -ieq 'explorer.exe' -and
+                $expectedExplorerPath -and
+                [StringComparer]::OrdinalIgnoreCase.Equals($previousExecutablePath, $expectedExplorerPath)
+            ) { break }
+            Stop-Installer 'DBINST_NATIVE_WINDOWS_REQUIRED' 'native process ancestry returned an unknown process'
+        }
+        if ($resolvedProcesses.Count -ne 1) { Stop-Installer 'DBINST_NATIVE_WINDOWS_REQUIRED' 'native process ancestry returned an unknown process' }
+        $process = $resolvedProcesses[0]
+        $processIdProperty = $process.PSObject.Properties['ProcessId']
+        $parentProcessIdProperty = $process.PSObject.Properties['ParentProcessId']
+        $nameProperty = $process.PSObject.Properties['Name']
+        if ($null -eq $processIdProperty -or $null -eq $parentProcessIdProperty -or $null -eq $nameProperty) {
+            Stop-Installer 'DBINST_NATIVE_WINDOWS_REQUIRED' 'native process ancestry returned an invalid process row'
+        }
+        $resolvedProcessId = & $parseProcessId $processIdProperty.Value $false
+        $resolvedParentProcessId = & $parseProcessId $parentProcessIdProperty.Value $true
+        $resolvedName = [string]$nameProperty.Value
+        if (
+            -not $resolvedProcessId.valid -or
+            [int]$resolvedProcessId.value -ne $processId -or
+            -not $resolvedParentProcessId.valid -or
+            [string]::IsNullOrWhiteSpace($resolvedName)
+        ) { Stop-Installer 'DBINST_NATIVE_WINDOWS_REQUIRED' 'native process ancestry returned an invalid process row' }
+        if ($resolvedProcessCount -ge 32) { Stop-Installer 'DBINST_NATIVE_WINDOWS_REQUIRED' 'native process ancestry exceeded the maximum supported depth' }
+        $ancestors.Add($resolvedName)
+        $resolvedProcessCount++
+        $previousProcessName = $resolvedName
+        $previousExecutablePath = if ($process.PSObject.Properties['ExecutablePath']) { [string]$process.ExecutablePath } else { '' }
+        $previousParentProcessId = [int]$resolvedParentProcessId.value
+        $processId = $previousParentProcessId
     }
     return [pscustomobject][ordered]@{
         os = if ($env:OS -ceq 'Windows_NT') { 'Windows' } else { [Environment]::OSVersion.Platform.ToString() }
