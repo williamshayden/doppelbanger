@@ -36,6 +36,18 @@ function Assert-Code {
     Assert-True ($Result.Errors.Code -contains $Code) "expected diagnostic code $Code"
 }
 
+function Assert-FirstDiagnosticCode {
+    param($Result, [string]$Expected, [string]$Message)
+    $actual = if (@($Result.Errors).Count -gt 0) { [string]$Result.Errors[0].code } else { '' }
+    Assert-Equal $actual $Expected $Message
+}
+
+function Assert-FirstDiagnosticMessageLike {
+    param($Result, [string]$Pattern, [string]$Message)
+    $actual = if (@($Result.Errors).Count -gt 0) { [string]$Result.Errors[0].message } else { '' }
+    Assert-True ($actual -match $Pattern) "$Message (first diagnostic: $actual)"
+}
+
 function Read-Fixture {
     param([string]$Name)
     $path = Join-Path $fixtureRoot $Name
@@ -108,6 +120,17 @@ function Write-Variant {
     return $path
 }
 
+function Write-FakePeAmd64 {
+    param([string]$Path)
+    $bytes = New-Object byte[] 512
+    $bytes[0] = 0x4D; $bytes[1] = 0x5A
+    [BitConverter]::GetBytes([int]0x80).CopyTo($bytes, 0x3C)
+    $bytes[0x80] = 0x50; $bytes[0x81] = 0x45
+    $bytes[0x84] = 0x64; $bytes[0x85] = 0x86
+    $bytes[0x98] = 0x0B; $bytes[0x99] = 0x02
+    [IO.File]::WriteAllBytes($Path, $bytes)
+}
+
 $lock = Read-ToolchainLock -Path $lockPath
 Assert-Equal $lock.toolchain_root '%LOCALAPPDATA%\Programs\doppelbanger-devtools' 'approved per-user devtools root is locked'
 Assert-Equal $lock.rust.toolchain_directory '1.97.1-x86_64-pc-windows-msvc' 'physical Rust toolchain directory is locked'
@@ -128,6 +151,7 @@ $validProbe = Read-Fixture 'windows-native-valid.json'
 $valid = Test-NativeWindowsProbe -Probe $validProbe -Lock $lock -Profile HeadlessVst3
 Assert-True $valid.Success 'native Windows fixture passes'
 Assert-Equal $valid.Errors.Count 0 'valid fixture has no errors'
+Assert-True (@($validProbe.binaries | Where-Object { $_.name -ceq 'ctest' }).Count -eq 1) 'native fixture includes locked ctest.exe provenance'
 
 $metadataOnlyValidProbe = Read-Fixture 'windows-native-valid.json'
 $metadataOnlyValidProbe | Add-Member -NotePropertyName metadata_only -NotePropertyValue $true -Force
@@ -171,8 +195,7 @@ Assert-True (-not (Test-AbletonPresent -CandidatePaths @($missingAbletonPathOne,
 $missingAbletonProbe = Read-Fixture 'windows-native-valid.json'
 $missingAbletonProbe.ableton_present = $false
 $missingAbletonResult = Test-NativeWindowsProbe -Probe $missingAbletonProbe -Lock $lock -Profile HeadlessVst3
-Assert-Equal $missingAbletonResult.Warnings.Count 1 'missing Ableton adds only one warning to an otherwise valid probe'
-Assert-True ($missingAbletonResult.Warnings.Code -contains 'DBDOC_ABLETON_NOT_FOUND') 'missing Ableton warning has a stable code'
+Assert-Equal $missingAbletonResult.Warnings.Count 0 'HeadlessVst3 does not inventory Ableton'
 
 foreach ($dockerArguments in @(
     @( '--config', 'C:\shadow' ), @( '--config=C:\shadow' ),
@@ -216,7 +239,7 @@ Assert-Code (Test-NativeWindowsProbe -Probe $gnuProbe -Lock $lock -Profile Compa
 $unknownWslProbe = Read-Fixture 'windows-native-valid.json'
 $unknownWslProbe.wsl_present = $true
 $unknownWslProbe.wsl_version = ''
-Assert-Code (Test-NativeWindowsProbe -Probe $unknownWslProbe -Lock $lock -Profile HeadlessVst3) 'DBDOC_WSL_VERSION_UNKNOWN'
+Assert-True (Test-NativeWindowsProbe -Probe $unknownWslProbe -Lock $lock -Profile HeadlessVst3).Success 'HeadlessVst3 ignores an installed WSL executable with unknown version'
 
 $wrongSdkProbe = Read-Fixture 'windows-native-valid.json'
 $wrongSdkProbe.vsdevcmd.windows_sdk_version = '10.0.22621.0\'
@@ -227,12 +250,12 @@ Assert-Code (Test-NativeWindowsProbe -Probe $wrongSdkProbe -Lock $lock -Profile 
 $oldWslProbe = Read-Fixture 'windows-native-valid.json'
 $oldWslProbe.wsl_version = '2.0.0'
 $oldWsl = Test-NativeWindowsProbe -Probe $oldWslProbe -Lock $lock -Profile HeadlessVst3
-Assert-Code $oldWsl 'DBDOC_TOOL_VERSION_DRIFT'
+Assert-True $oldWsl.Success 'HeadlessVst3 ignores an installed old WSL executable'
 
 $badComposeConfigProbe = Read-Fixture 'windows-native-valid.json'
 $badComposeConfigProbe.docker_compose_config_valid = $false
 $badComposeConfig = Test-NativeWindowsProbe -Probe $badComposeConfigProbe -Lock $lock -Profile HeadlessVst3
-Assert-Code $badComposeConfig 'DBDOC_COMPOSE_CONFIG_INVALID'
+Assert-True $badComposeConfig.Success 'HeadlessVst3 ignores invalid Compose configuration'
 
 $ambientShadowProbe = Read-Fixture 'windows-native-valid.json'
 ($ambientShadowProbe.binaries | Where-Object name -eq 'cmake').ambient_path = 'C:\shadow\cmake.exe'
@@ -242,8 +265,6 @@ Assert-Code $ambientShadow 'DBDOC_TOOL_PATH_SHADOW'
 foreach ($fixtureName in @(
     'windows-wsl-invalid.json',
     'windows-wsl-parent-invalid.json',
-    'windows-compose-shadow-invalid.json',
-    'windows-compose-extra-dir-shadow-invalid.json',
     'windows-cargo-missing-invalid.json',
     'windows-rustfmt-missing-invalid.json',
     'windows-clippy-missing-invalid.json',
@@ -255,11 +276,175 @@ foreach ($fixtureName in @(
     Assert-Code $result $probe.expected_code
 }
 
+foreach ($fixtureName in @('windows-compose-shadow-invalid.json', 'windows-compose-extra-dir-shadow-invalid.json')) {
+    $probe = Read-Fixture $fixtureName
+    $headlessResult = Test-NativeWindowsProbe -Probe $probe -Lock $lock -Profile HeadlessVst3
+    Assert-True $headlessResult.Success "$fixtureName is irrelevant to HeadlessVst3"
+    $stateResult = Test-NativeWindowsProbe -Probe $probe -Lock $lock -Profile StatePlaneIntegration
+    Assert-FirstDiagnosticCode $stateResult 'DBDOC_DOCKER_PLUGIN_SHADOW' "$fixtureName is a state-plane Compose provenance fault"
+}
+
 $varRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'var'))
 $testTemp = Join-Path $varRoot ("tooling-contract-{0}" -f [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($testTemp) | Out-Null
 $script:testTemp = $testTemp
 try {
+    $headlessNoState = Write-Variant {
+        param($p)
+        $p.wsl_present = $false
+        $p.wsl_version = ''
+        $p.node_version = ''; $p.node_platform = ''; $p.node_arch = ''; $p.npm_version = ''
+        $p.docker_desktop_version = ''; $p.docker_desktop_build = ''
+        $p.docker_cli_version = ''; $p.docker_engine_version = ''; $p.docker_compose_version = ''
+        $p.docker_running = $false; $p.docker_context = ''
+        $p.docker_server_os = ''; $p.docker_server_arch = ''
+        $p.binaries = @($p.binaries | Where-Object { $_.name -notin @('node', 'docker', 'docker-compose') })
+    }
+    $headlessProbe = Get-Content -LiteralPath $headlessNoState -Raw | ConvertFrom-Json
+    $headless = Test-NativeWindowsProbe -Probe $headlessProbe -Lock $lock -Profile 'HeadlessVst3'
+    Assert-True $headless.Success 'HeadlessVst3 ignores absent WSL, Docker, Node, and npm'
+
+    $headlessOldWsl = Write-Variant {
+        param($p)
+        $p.wsl_present = $true
+        $p.wsl_version = '1.2.3.4'
+    }
+    $headlessProbe = Get-Content -LiteralPath $headlessOldWsl -Raw | ConvertFrom-Json
+    $headless = Test-NativeWindowsProbe -Probe $headlessProbe -Lock $lock -Profile 'HeadlessVst3'
+    Assert-True $headless.Success 'HeadlessVst3 ignores an installed old WSL executable'
+
+    $headlessUnknownWsl = Write-Variant {
+        param($p)
+        $p.wsl_present = $true
+        $p.wsl_version = ''
+    }
+    $headlessProbe = Get-Content -LiteralPath $headlessUnknownWsl -Raw | ConvertFrom-Json
+    $headless = Test-NativeWindowsProbe -Probe $headlessProbe -Lock $lock -Profile 'HeadlessVst3'
+    Assert-True $headless.Success 'HeadlessVst3 ignores an installed WSL executable with unknown version'
+
+    $stateOnly = Write-Variant {
+        param($p)
+        $p.compiler = ''; $p.compiler_version = ''
+        $p.vs_product_version = ''; $p.vs_installation_version = ''; $p.vs_instance_path = ''
+        $p.msvc_component = ''; $p.windows_sdk_component = ''; $p.windows_sdk_target = ''
+        $p.rust_version = ''; $p.rust_target = ''; $p.rust_toolchain_root = ''
+        $p.rust_components = [pscustomobject]@{ cargo=$false; rustfmt=$false; clippy=$false; metadata_valid=$false; installer_version=''; channel_version='' }
+        $p.cmake_version = ''; $p.ninja_version = ''
+        $p.vsdevcmd = [pscustomobject]@{ path=''; import_args=''; include=''; lib=''; windows_sdk_dir=''; windows_sdk_version=''; vctools_install_dir='' }
+        $p.binaries = @($p.binaries | Where-Object { $_.name -in @('docker', 'docker-compose') })
+    }
+    $stateProbe = Get-Content -LiteralPath $stateOnly -Raw | ConvertFrom-Json
+    $state = Test-NativeWindowsProbe -Probe $stateProbe -Lock $lock -Profile 'StatePlaneIntegration'
+    Assert-True $state.Success 'StatePlaneIntegration does not require a compiler or native build tools'
+
+    $stateNoWsl = Write-Variant { param($p); $p.wsl_present=$false; $p.wsl_version='' }
+    $probe = Get-Content -LiteralPath $stateNoWsl -Raw | ConvertFrom-Json
+    $result = Test-NativeWindowsProbe -Probe $probe -Lock $lock -Profile 'StatePlaneIntegration'
+    Assert-FirstDiagnosticCode $result 'DBDOC_WSL_REQUIRED' 'State-plane missing WSL is diagnosed before Docker'
+
+    $stateUnknownWsl = Write-Variant { param($p); $p.wsl_present=$true; $p.wsl_version='' }
+    $probe = Get-Content -LiteralPath $stateUnknownWsl -Raw | ConvertFrom-Json
+    $result = Test-NativeWindowsProbe -Probe $probe -Lock $lock -Profile 'StatePlaneIntegration'
+    Assert-FirstDiagnosticCode $result 'DBDOC_WSL_VERSION_UNKNOWN' 'State-plane unknown WSL version is stable'
+
+    $stateOldWsl = Write-Variant { param($p); $p.wsl_present=$true; $p.wsl_version='1.2.3.4' }
+    $probe = Get-Content -LiteralPath $stateOldWsl -Raw | ConvertFrom-Json
+    $result = Test-NativeWindowsProbe -Probe $probe -Lock $lock -Profile 'StatePlaneIntegration'
+    Assert-FirstDiagnosticCode $result 'DBDOC_TOOL_VERSION_DRIFT' 'State-plane old WSL is diagnosed before Docker'
+
+    $runningUnknownEngine = Write-Variant { param($p); $p.docker_running=$true; $p.docker_engine_version=''; $p.docker_cli_version='0.0.1' }
+    $probe = Get-Content -LiteralPath $runningUnknownEngine -Raw | ConvertFrom-Json
+    $result = Test-NativeWindowsProbe -Probe $probe -Lock $lock -Profile 'StatePlaneIntegration'
+    Assert-FirstDiagnosticCode $result 'DBDOC_TOOL_MISSING' 'Running Docker with unknown engine version is missing before version drift'
+    Assert-FirstDiagnosticMessageLike $result 'Docker Engine' 'Running Docker with unknown engine version names the missing component'
+
+    $runningDriftedEngine = Write-Variant { param($p); $p.docker_running=$true; $p.docker_engine_version='0.0.1'; $p.docker_compose_config_valid=$false }
+    $probe = Get-Content -LiteralPath $runningDriftedEngine -Raw | ConvertFrom-Json
+    $result = Test-NativeWindowsProbe -Probe $probe -Lock $lock -Profile 'StatePlaneIntegration'
+    Assert-FirstDiagnosticCode $result 'DBDOC_TOOL_VERSION_DRIFT' 'Running Docker engine drift is diagnosed before invalid Compose configuration'
+    Assert-FirstDiagnosticMessageLike $result 'Docker Engine' 'Running Docker engine drift names the drifted component'
+
+    $stateFaults = @(
+        @{ Name='Docker absent'; Code='DBDOC_TOOL_MISSING'; Mutate={ param($p); $p.docker_desktop_version=''; $p.docker_desktop_build=''; $p.docker_cli_version=''; $p.docker_compose_version=''; $p.docker_compose_plugin_path=''; $p.binaries=@($p.binaries | Where-Object { $_.name -notin @('docker','docker-compose') }) } },
+        @{ Name='Docker stopped'; Code='DBDOC_DOCKER_STOPPED'; Mutate={ param($p); $p.docker_running=$false; $p.docker_engine_version=''; $p.docker_context=''; $p.docker_server_os=''; $p.docker_server_arch='' } },
+        @{ Name='Docker version drift'; Code='DBDOC_TOOL_VERSION_DRIFT'; Mutate={ param($p); $p.docker_cli_version='0.0.1' } },
+        @{ Name='Compose shadow'; Code='DBDOC_DOCKER_PLUGIN_SHADOW'; Mutate={ param($p); $p.docker_compose_plugin_path='C:\shadow\docker-compose.exe' } },
+        @{ Name='Docker plugin config'; Code='DBDOC_DOCKER_PLUGIN_CONFIG_INVALID'; Mutate={ param($p); $p.docker_plugin_config_valid=$false } },
+        @{ Name='Compose configuration'; Code='DBDOC_COMPOSE_CONFIG_INVALID'; Mutate={ param($p); $p.docker_compose_config_valid=$false } }
+    )
+    foreach ($fault in $stateFaults) {
+        $variantPath = Write-Variant $fault.Mutate
+        $faultProbe = Get-Content -LiteralPath $variantPath -Raw | ConvertFrom-Json
+        Assert-True (Test-NativeWindowsProbe -Probe $faultProbe -Lock $lock -Profile HeadlessVst3).Success "HeadlessVst3 ignores $($fault.Name)"
+        Assert-FirstDiagnosticCode (Test-NativeWindowsProbe -Probe $faultProbe -Lock $lock -Profile StatePlaneIntegration) $fault.Code "StatePlaneIntegration diagnoses $($fault.Name)"
+    }
+
+    $precedencePairs = @(
+        @{ Earlier='DBDOC_DOCKER_PLUGIN_CONFIG_INVALID'; Mutate={param($p);$p.docker_plugin_config_valid=$false;$p.docker_compose_plugin_path='C:\shadow\docker-compose.exe'} },
+        @{ Earlier='DBDOC_DOCKER_PLUGIN_SHADOW'; Mutate={param($p);$p.docker_compose_plugin_path='C:\shadow\docker-compose.exe';$p.docker_desktop_version='';$p.docker_cli_version='';$p.docker_compose_version=''} },
+        @{ Earlier='DBDOC_TOOL_MISSING'; Pattern='Docker Desktop|Docker CLI|Docker Compose'; Mutate={param($p);$p.docker_desktop_version='';$p.docker_cli_version='0.0.1'} },
+        @{ Earlier='DBDOC_TOOL_VERSION_DRIFT'; Pattern='Docker CLI'; Mutate={param($p);$p.docker_cli_version='0.0.1';$p.docker_compose_config_valid=$false} },
+        @{ Earlier='DBDOC_COMPOSE_CONFIG_INVALID'; Mutate={param($p);$p.docker_compose_config_valid=$false;$p.docker_running=$false} },
+        @{ Earlier='DBDOC_DOCKER_STOPPED'; Mutate={param($p);$p.docker_running=$false;$p.docker_context='wrong'} },
+        @{ Earlier='DBDOC_TOOL_VERSION_DRIFT'; Pattern='Docker context'; Mutate={param($p);$p.docker_context='wrong';$p.docker_server_os='windows';$p.docker_server_arch='arm64'} }
+    )
+    foreach ($pair in $precedencePairs) {
+        $variantPath = Write-Variant $pair.Mutate
+        $pairProbe = Get-Content -LiteralPath $variantPath -Raw | ConvertFrom-Json
+        $pairResult = Test-NativeWindowsProbe -Probe $pairProbe -Lock $lock -Profile StatePlaneIntegration
+        Assert-FirstDiagnosticCode $pairResult $pair.Earlier "State-plane precedence begins with $($pair.Earlier)"
+        if ($pair.Pattern) { Assert-FirstDiagnosticMessageLike $pairResult $pair.Pattern "State-plane precedence message identifies $($pair.Pattern)" }
+    }
+
+    $serverOrder = @(
+        @{ Field='docker_server_os'; Value='windows'; Pattern='server OS' },
+        @{ Field='docker_server_arch'; Value='arm64'; Pattern='server architecture' }
+    )
+    foreach ($case in $serverOrder) {
+        $variantPath = Write-Variant { param($p); $p.($case.Field)=$case.Value }
+        $caseProbe = Get-Content -LiteralPath $variantPath -Raw | ConvertFrom-Json
+        $caseResult = Test-NativeWindowsProbe -Probe $caseProbe -Lock $lock -Profile StatePlaneIntegration
+        Assert-FirstDiagnosticCode $caseResult 'DBDOC_TOOL_VERSION_DRIFT' "State-plane detects $($case.Pattern) drift"
+        Assert-FirstDiagnosticMessageLike $caseResult $case.Pattern "State-plane names $($case.Pattern) drift"
+    }
+
+    $stateIgnoresNative = Write-Variant {
+        param($p)
+        $p.compiler=''; $p.compiler_version=''; $p.rust_version=''; $p.cmake_version=''; $p.ninja_version=''
+        $p.binaries=@($p.binaries | Where-Object { $_.name -in @('docker','docker-compose') })
+    }
+    $stateIgnoresNativeProbe = Get-Content -LiteralPath $stateIgnoresNative -Raw | ConvertFrom-Json
+    Assert-True (Test-NativeWindowsProbe -Probe $stateIgnoresNativeProbe -Lock $lock -Profile StatePlaneIntegration).Success 'StatePlaneIntegration ignores missing and shadowed native binaries'
+
+    $compatEmpty = Write-Variant {
+        param($p)
+        $p.compiler='';$p.compiler_version='';$p.vs_product_version='';$p.vs_installation_version='';$p.msvc_component='';$p.windows_sdk_component='';$p.windows_sdk_target=''
+        $p.rust_version='';$p.rust_target='';$p.rust_components=[pscustomobject]@{cargo=$false;rustfmt=$false;clippy=$false;metadata_valid=$false;installer_version='';channel_version=''}
+        $p.cmake_version='';$p.ninja_version='';$p.node_version='';$p.node_platform='';$p.node_arch='';$p.npm_version=''
+        $p.wsl_present=$false;$p.wsl_version='';$p.docker_desktop_version='';$p.docker_desktop_build='';$p.docker_cli_version='';$p.docker_engine_version='';$p.docker_compose_version='';$p.docker_compose_plugin_path='';$p.docker_running=$false
+        $p.binaries=@()
+    }
+    $compatEmptyProbe = Get-Content -LiteralPath $compatEmpty -Raw | ConvertFrom-Json
+    $compatEmptyResult = Test-NativeWindowsProbe -Probe $compatEmptyProbe -Lock $lock -Profile Compatibility
+    Assert-True $compatEmptyResult.Success 'Compatibility succeeds when optional capability groups are absent'
+    Assert-Equal $compatEmptyResult.Errors.Count 0 'Compatibility optional absence produces no errors'
+    Assert-True ($compatEmptyResult.Warnings.Code -contains 'DBDOC_TOOL_MISSING') 'Compatibility records optional absence warnings'
+
+    $compatUnsafeDocker = Write-Variant { param($p); $p.docker_plugin_config_valid=$false; $p.docker_compose_plugin_path='C:\shadow\docker-compose.exe' }
+    $compatUnsafeProbe = Get-Content -LiteralPath $compatUnsafeDocker -Raw | ConvertFrom-Json
+    $compatUnsafeResult = Test-NativeWindowsProbe -Probe $compatUnsafeProbe -Lock $lock -Profile Compatibility
+    Assert-True $compatUnsafeResult.Success 'Compatibility reports Docker plugin hazards without making optional inventory required'
+    Assert-True ($compatUnsafeResult.Warnings.Code -contains 'DBDOC_DOCKER_PLUGIN_CONFIG_INVALID') 'Compatibility warns about malformed Docker plugin configuration'
+    Assert-True ($compatUnsafeResult.Warnings.Code -contains 'DBDOC_DOCKER_PLUGIN_SHADOW') 'Compatibility warns about Compose shadowing'
+
+    foreach ($validatorName in @('validator','pluginval')) {
+        $validatorAbsent = Write-Variant { param($p); $p.binaries=@($p.binaries | Where-Object { $_.name -cne $validatorName }) }
+        $validatorAbsentProbe = Get-Content -LiteralPath $validatorAbsent -Raw | ConvertFrom-Json
+        Assert-True (Test-NativeWindowsProbe -Probe $validatorAbsentProbe -Lock $lock -Profile HeadlessVst3).Success "HeadlessVst3 does not require unrequested $validatorName"
+        Assert-FirstDiagnosticCode (Test-NativeWindowsProbe -Probe $validatorAbsentProbe -Lock $lock -Profile HeadlessVst3 -RequestedValidator $validatorName) 'DBDOC_TOOL_MISSING' "HeadlessVst3 requires requested $validatorName"
+        Assert-True (Test-NativeWindowsProbe -Probe (Read-Fixture 'windows-native-valid.json') -Lock $lock -Profile HeadlessVst3 -RequestedValidator $validatorName).Success "HeadlessVst3 accepts present requested $validatorName"
+    }
+
     $absentGlobalConfig = Join-Path $testTemp 'absent-global.gitconfig'
     $absentGitInspection = Get-GlobalSafeDirectoryInspection -RootFile $absentGlobalConfig
     Assert-True $absentGitInspection.inspection_valid 'absent global Git config is a valid empty inspection'
@@ -388,6 +573,17 @@ try {
         packages = @($lock.visual_studio.msvc_component, $lock.visual_studio.windows_sdk_component)
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $fakeVsStateRoot 'state.json') -Encoding UTF8
 
+    $fakeCmakeRoot = Join-Path $testTemp 'cmake'
+    $fakeNinjaRoot = Join-Path $testTemp 'ninja'
+    [IO.Directory]::CreateDirectory((Join-Path $fakeCmakeRoot 'bin')) | Out-Null
+    [IO.Directory]::CreateDirectory($fakeNinjaRoot) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $fakeCmakeRoot 'bin\cmake.exe'), 'physical test executable')
+    [IO.File]::WriteAllText((Join-Path $fakeCmakeRoot 'bin\ctest.exe'), 'physical test executable')
+    [IO.File]::WriteAllText((Join-Path $fakeNinjaRoot 'ninja.exe'), 'physical test executable')
+    $layoutLock = $lock | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $layoutLock.cmake.root = $fakeCmakeRoot
+    $layoutLock.ninja.root = $fakeNinjaRoot
+
     $savedVsEnvironment = @{}
     foreach ($name in @('INCLUDE', 'LIB', 'WindowsSdkDir', 'WindowsSDKVersion', 'VCToolsInstallDir')) {
         $savedVsEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -395,7 +591,7 @@ try {
     }
     $script:metadataLayoutLaunches = 0
     try {
-        $layoutProbe = Get-NativeWindowsProbe -Lock $lock -RepoRoot $repoRoot -MetadataOnly -MetadataPaths @{
+        $layoutProbe = Get-NativeWindowsProbe -Lock $layoutLock -RepoRoot $repoRoot -MetadataOnly -MetadataPaths @{
             RustupHome = $fakeRustupHome
             VisualStudioInstancesRoot = $fakeVsInstances
             WindowsSdkRoot = $fakeSdkRoot
@@ -415,6 +611,212 @@ try {
     Assert-True (-not [string]::IsNullOrWhiteSpace($layoutProbe.vsdevcmd.lib)) 'metadata-only probe derives nonempty LIB'
     Assert-True ($layoutProbe.vsdevcmd.include -notmatch 'stale-ambient' -and $layoutProbe.vsdevcmd.lib -notmatch 'stale-ambient') 'metadata-only probe never copies ambient stale VS environment'
     Assert-True (-not $layoutProbe.ableton_present) 'metadata path injection reports missing Ableton when both candidates are absent'
+    Assert-True (@($layoutProbe.binaries | Where-Object { $_.name -ceq 'ctest' }).Count -eq 1) 'native metadata probe includes locked ctest.exe provenance'
+
+    $script:headlessCommands = New-Object 'Collections.Generic.List[string]'
+    $headlessLiveProbe = Get-NativeWindowsProbe -Lock $layoutLock -RepoRoot $repoRoot -Profile HeadlessVst3 -MetadataPaths @{
+        RustupHome = $fakeRustupHome
+        VisualStudioInstancesRoot = $fakeVsInstances
+        WindowsSdkRoot = $fakeSdkRoot
+    } -CommandRunner {
+        param($Path, $Arguments)
+        $script:headlessCommands.Add("$Path $($Arguments -join ' ')")
+        if ($Path -match 'rustc') { return ('rustc 1.97.1' + [Environment]::NewLine + 'host: x86_64-pc-windows-msvc') }
+        if ($Path -match 'cl\.exe') { return 'Compiler Version 19.44.35222' }
+        if ($Path -match 'cmake') { return 'cmake version 4.4.2' }
+        if ($Path -match 'ninja') { return '1.13.2' }
+        return ''
+    }
+    Assert-Equal @($script:headlessCommands | Where-Object { $_ -match '(?i)docker|compose|node|npm|wsl' }).Count 0 'HeadlessVst3 never launches excluded state-plane or Node tools'
+    Assert-True (@($script:headlessCommands | Where-Object { $_ -match '(?i)rustc|cl\.exe|cmake|ninja' }).Count -ge 4) 'HeadlessVst3 launches native capability probes'
+    Assert-Equal @($headlessLiveProbe.binaries | Where-Object { $_.name -in @('node','docker','docker-compose') }).Count 0 'HeadlessVst3 emits no excluded binary records'
+
+    $fakeWsl = Join-Path $testTemp 'wsl.exe'
+    $fakeDockerRoot = Join-Path $testTemp 'Docker'
+    $fakeDockerCli = Join-Path $fakeDockerRoot 'resources\bin\docker.exe'
+    $fakeComposeDir = Join-Path $testTemp 'docker-cli-plugins'
+    $fakeCompose = Join-Path $fakeComposeDir 'docker-compose.exe'
+    $fakeDockerConfig = Join-Path $testTemp 'docker-config-state'
+    foreach ($directory in @((Split-Path -Parent $fakeDockerCli), $fakeComposeDir, $fakeDockerConfig)) { [IO.Directory]::CreateDirectory($directory) | Out-Null }
+    [IO.File]::WriteAllText($fakeWsl, 'metadata-only WSL executable')
+    foreach ($file in @((Join-Path $fakeDockerRoot 'Docker Desktop.exe'), $fakeDockerCli, $fakeCompose)) { Write-FakePeAmd64 $file }
+    @{ auths=@{}; cliPluginsExtraDirs=@($fakeComposeDir) } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $fakeDockerConfig 'config.json') -Encoding UTF8
+    $stateLock = $layoutLock | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $stateLock.docker.root = $fakeDockerRoot
+    $stateLock.docker.cli_path = $fakeDockerCli
+    $stateLock.docker.compose_plugin_path = $fakeCompose
+    $stateMetadata = @{
+        WslCandidates=@($fakeWsl)
+        WslVersion=$lock.wsl.minimum_version
+        DockerDesktopVersion=$lock.docker.desktop_version
+        DockerDesktopBuild=$lock.docker.desktop_build
+    }
+    $previousDockerConfigForScopes = $env:DOCKER_CONFIG
+    try {
+        $env:DOCKER_CONFIG = $fakeDockerConfig
+        $script:stateCommands = New-Object 'Collections.Generic.List[string]'
+        $stateRunner = {
+            param($Path, $Arguments)
+            $script:stateCommands.Add("$Path $($Arguments -join ' ')")
+            if ($Path -ieq $stateLock.docker.cli_path -and $Arguments[0] -ceq '--version') { return "Docker version $($stateLock.docker.cli_version), build fixture" }
+            if ($Path -ieq $stateLock.docker.compose_plugin_path -and $Arguments[0] -ceq 'version') { return $stateLock.docker.compose_version }
+            if ($Path -ieq $stateLock.docker.cli_path -and $Arguments[0] -ceq 'version') { return ([pscustomobject]@{Version=$stateLock.docker.engine_version;Os=$stateLock.docker.server_os;Arch=$stateLock.docker.server_arch}|ConvertTo-Json -Compress) }
+            if ($Path -ieq $stateLock.docker.cli_path -and $Arguments[0] -ceq 'context') { return $stateLock.docker.context }
+            if ($Path -ieq $stateLock.docker.compose_plugin_path -and $Arguments[-1] -ceq '--quiet') { return [pscustomobject]@{ Output=''; ExitCode=0 } }
+            return ''
+        }
+        $stateLiveProbe = Get-NativeWindowsProbe -Lock $stateLock -RepoRoot $repoRoot -Profile StatePlaneIntegration -MetadataPaths $stateMetadata -CommandRunner $stateRunner
+        Assert-Equal @($script:stateCommands | Where-Object { $_ -match '(?i)cargo|rustc|rustfmt|clippy|cl\.exe|link\.exe|lib\.exe|dumpbin\.exe|cmake|ninja|node|npm|wsl' }).Count 0 'StatePlaneIntegration never launches native, Node, npm, or WSL tools'
+        Assert-Equal @($stateLiveProbe.binaries | Where-Object { $_.name -notin @('docker','docker-compose') }).Count 0 'StatePlaneIntegration emits only Docker capability binaries'
+        Assert-Equal @($script:stateCommands | Where-Object { $_ -match '(?i)docker|compose' }).Count 5 'exact state-plane probe launches only locked Docker and Compose commands'
+        Assert-Equal @($script:stateCommands | Where-Object { $_ -match 'config --quiet$' }).Count 1 'exact trusted state-plane probe validates Compose configuration exactly once'
+
+        foreach ($badWsl in @(
+            @{ Label='missing'; Candidates=@((Join-Path $testTemp 'missing-wsl.exe')); Version=$lock.wsl.minimum_version },
+            @{ Label='unknown'; Candidates=@($fakeWsl); Version='' },
+            @{ Label='old'; Candidates=@($fakeWsl); Version='1.2.3.4' }
+        )) {
+            $script:blockedStateCommands = New-Object 'Collections.Generic.List[string]'
+            $blockedRunner = { param($Path,$Arguments); $script:blockedStateCommands.Add("$Path $($Arguments -join ' ')"); return '' }
+            $blockedProbe = Get-NativeWindowsProbe -Lock $stateLock -RepoRoot $repoRoot -Profile StatePlaneIntegration -MetadataPaths @{
+                WslCandidates=$badWsl.Candidates;WslVersion=$badWsl.Version
+                DockerDesktopVersion=$lock.docker.desktop_version;DockerDesktopBuild=$lock.docker.desktop_build
+            } -CommandRunner $blockedRunner
+            Assert-Equal $script:blockedStateCommands.Count 0 "$($badWsl.Label) WSL metadata blocks every Docker and Compose launch"
+            Assert-Equal @($blockedProbe.binaries).Count 0 "$($badWsl.Label) WSL metadata returns no Docker binary records"
+        }
+
+        foreach ($compatWsl in @(
+            @{ Label='missing'; Candidates=@((Join-Path $testTemp 'missing-compat-wsl.exe')); Version=''; Warning='DBDOC_TOOL_MISSING' },
+            @{ Label='unknown'; Candidates=@($fakeWsl); Version=''; Warning='DBDOC_TOOL_MISSING' },
+            @{ Label='old'; Candidates=@($fakeWsl); Version='1.2.3.4'; Warning='DBDOC_TOOL_VERSION_DRIFT' }
+        )) {
+            $script:compatibilityCommands = New-Object 'Collections.Generic.List[string]'
+            $compatibilityProbe = Get-NativeWindowsProbe -Lock $stateLock -RepoRoot $repoRoot -Profile Compatibility -MetadataPaths @{
+                RustupHome=$fakeRustupHome
+                VisualStudioInstancesRoot=$fakeVsInstances
+                WindowsSdkRoot=$fakeSdkRoot
+                WslCandidates=$compatWsl.Candidates
+                WslVersion=$compatWsl.Version
+                DockerDesktopVersion=$lock.docker.desktop_version
+                DockerDesktopBuild=$lock.docker.desktop_build
+                AbletonRoots=@((Join-Path $testTemp 'missing-ableton-one'),(Join-Path $testTemp 'missing-ableton-two'))
+            } -CommandRunner {
+                param($Path,$Arguments)
+                $script:compatibilityCommands.Add("$Path $($Arguments -join ' ')")
+                if($Path-ieq$stateLock.docker.cli_path-and$Arguments[0]-eq'--version'){return "Docker version $($stateLock.docker.cli_version)"}
+                if($Path-ieq$stateLock.docker.compose_plugin_path-and$Arguments[0]-eq'version'){return $stateLock.docker.compose_version}
+                if($Path-ieq$stateLock.docker.cli_path-and$Arguments[0]-eq'version'){return ([pscustomobject]@{Version=$stateLock.docker.engine_version;Os=$stateLock.docker.server_os;Arch=$stateLock.docker.server_arch}|ConvertTo-Json -Compress)}
+                if($Path-ieq$stateLock.docker.cli_path-and$Arguments[0]-eq'context'){return $stateLock.docker.context}
+                if($Path-ieq$stateLock.docker.compose_plugin_path-and$Arguments[-1]-eq'--quiet'){return [pscustomobject]@{Output='';ExitCode=0}}
+                if($Path-match'rustc'){return ('rustc 1.97.1'+[Environment]::NewLine+'host: x86_64-pc-windows-msvc')}
+                if($Path-match'cl\.exe'){return 'Compiler Version 19.44.35222'}
+                if($Path-match'cmake'){return 'cmake version 4.4.2'}
+                if($Path-match'ninja'){return '1.13.2'}
+                return ''
+            }
+            Assert-Equal $compatibilityProbe.docker_cli_version $lock.docker.cli_version "Compatibility inventories Docker CLI with $($compatWsl.Label) WSL metadata"
+            Assert-Equal $compatibilityProbe.docker_compose_version $lock.docker.compose_version "Compatibility inventories Compose with $($compatWsl.Label) WSL metadata"
+            Assert-True (@($compatibilityProbe.binaries|Where-Object{$_.name-in@('docker','docker-compose')}).Count-eq 2) "Compatibility records Docker binaries with $($compatWsl.Label) WSL metadata"
+            Assert-True (@($script:compatibilityCommands|Where-Object{$_-match'(?i)docker|compose'}).Count-ge 2) "Compatibility launches only injected Docker inventory commands despite $($compatWsl.Label) WSL metadata"
+
+            $compatibilityValidationProbe = Read-Fixture 'windows-native-valid.json'
+            $compatibilityValidationProbe.wsl_present = $compatibilityProbe.wsl_present
+            $compatibilityValidationProbe.wsl_version = $compatibilityProbe.wsl_version
+            $compatibilityValidationProbe.docker_desktop_version = $compatibilityProbe.docker_desktop_version
+            $compatibilityValidationProbe.docker_desktop_build = $compatibilityProbe.docker_desktop_build
+            $compatibilityValidationProbe.docker_cli_version = $compatibilityProbe.docker_cli_version
+            $compatibilityValidationProbe.docker_engine_version = $compatibilityProbe.docker_engine_version
+            $compatibilityValidationProbe.docker_compose_version = $compatibilityProbe.docker_compose_version
+            $compatibilityValidationProbe.docker_running = $compatibilityProbe.docker_running
+            $compatibilityValidationProbe.docker_context = $compatibilityProbe.docker_context
+            $compatibilityValidationProbe.docker_server_os = $compatibilityProbe.docker_server_os
+            $compatibilityValidationProbe.docker_server_arch = $compatibilityProbe.docker_server_arch
+            $compatibilityResult = Test-NativeWindowsProbe -Probe $compatibilityValidationProbe -Lock $lock -Profile Compatibility
+            Assert-True $compatibilityResult.Success "Compatibility keeps $($compatWsl.Label) WSL optional while Docker inventory is exact"
+            Assert-Equal $compatibilityResult.Errors.Count 0 "Compatibility emits no errors for $($compatWsl.Label) WSL metadata"
+            Assert-True ($compatibilityResult.Warnings.Code-contains$compatWsl.Warning) "Compatibility reports $($compatWsl.Label) WSL as an optional warning"
+        }
+
+        $script:compatibilityDriftCommands = New-Object 'Collections.Generic.List[string]'
+        $compatibilityDriftProbe = Get-NativeWindowsProbe -Lock $stateLock -RepoRoot $repoRoot -Profile Compatibility -MetadataPaths @{
+            RustupHome=$fakeRustupHome
+            VisualStudioInstancesRoot=$fakeVsInstances
+            WindowsSdkRoot=$fakeSdkRoot
+            WslCandidates=@($fakeWsl)
+            WslVersion='1.2.3.4'
+            DockerDesktopVersion=$lock.docker.desktop_version
+            DockerDesktopBuild=$lock.docker.desktop_build
+            AbletonRoots=@((Join-Path $testTemp 'missing-ableton-one'),(Join-Path $testTemp 'missing-ableton-two'))
+        } -CommandRunner {
+            param($Path,$Arguments)
+            $script:compatibilityDriftCommands.Add("$Path $($Arguments -join ' ')")
+            if($Path-ieq$stateLock.docker.cli_path-and$Arguments[0]-eq'--version'){return 'Docker version 0.0.1'}
+            if($Path-ieq$stateLock.docker.compose_plugin_path-and$Arguments[0]-eq'version'){return $stateLock.docker.compose_version}
+            if($Path-match'rustc'){return ('rustc 1.97.1'+[Environment]::NewLine+'host: x86_64-pc-windows-msvc')}
+            if($Path-match'cl\.exe'){return 'Compiler Version 19.44.35222'}
+            if($Path-match'cmake'){return 'cmake version 4.4.2'}
+            if($Path-match'ninja'){return '1.13.2'}
+            return ''
+        }
+        Assert-Equal $compatibilityDriftProbe.docker_cli_version '0.0.1' 'Compatibility records Docker CLI drift despite old WSL metadata'
+        Assert-True (@($script:compatibilityDriftCommands|Where-Object{$_-match'(?i)docker|compose'}).Count-ge 2) 'Compatibility runs injected Docker version inventory despite WSL and Docker drift'
+        $compatibilityDriftValidationProbe = Read-Fixture 'windows-native-valid.json'
+        $compatibilityDriftValidationProbe.wsl_version = '1.2.3.4'
+        $compatibilityDriftValidationProbe.docker_cli_version = $compatibilityDriftProbe.docker_cli_version
+        $compatibilityDriftValidationProbe.docker_engine_version = $compatibilityDriftProbe.docker_engine_version
+        $compatibilityDriftValidationProbe.docker_running = $compatibilityDriftProbe.docker_running
+        $compatibilityDriftValidationProbe.docker_context = $compatibilityDriftProbe.docker_context
+        $compatibilityDriftValidationProbe.docker_server_os = $compatibilityDriftProbe.docker_server_os
+        $compatibilityDriftValidationProbe.docker_server_arch = $compatibilityDriftProbe.docker_server_arch
+        $compatibilityDriftResult = Test-NativeWindowsProbe -Probe $compatibilityDriftValidationProbe -Lock $lock -Profile Compatibility
+        Assert-True $compatibilityDriftResult.Success 'Compatibility keeps simultaneous WSL and Docker drift warning-only'
+        Assert-Equal $compatibilityDriftResult.Errors.Count 0 'Compatibility emits no errors for simultaneous optional WSL and Docker drift'
+        Assert-True ($compatibilityDriftResult.Warnings.Code-contains'DBDOC_TOOL_VERSION_DRIFT') 'Compatibility records optional WSL and Docker drift warnings'
+
+        $absentDockerLock = $stateLock | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $absentDockerLock.docker.root = Join-Path $testTemp 'missing-docker'
+        $absentDockerLock.docker.cli_path = Join-Path $absentDockerLock.docker.root 'docker.exe'
+        $absentDockerLock.docker.compose_plugin_path = Join-Path $absentDockerLock.docker.root 'docker-compose.exe'
+        $script:absentDockerCommands = New-Object 'Collections.Generic.List[string]'
+        Get-NativeWindowsProbe -Lock $absentDockerLock -RepoRoot $repoRoot -Profile StatePlaneIntegration -MetadataPaths $stateMetadata -CommandRunner {
+            param($Path,$Arguments);$script:absentDockerCommands.Add("$Path $($Arguments -join ' ')");return ''
+        } | Out-Null
+        Assert-Equal @($script:absentDockerCommands | Where-Object { $_ -match 'config --quiet$' }).Count 0 'absent Docker and Compose never launch Compose configuration validation'
+
+        $shadowLock = $stateLock | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $shadowLock.docker.compose_plugin_path = Join-Path $testTemp 'locked-but-absent\docker-compose.exe'
+        $script:shadowCommands = New-Object 'Collections.Generic.List[string]'
+        Get-NativeWindowsProbe -Lock $shadowLock -RepoRoot $repoRoot -Profile StatePlaneIntegration -MetadataPaths $stateMetadata -CommandRunner {
+            param($Path,$Arguments);$script:shadowCommands.Add("$Path $($Arguments -join ' ')");if($Arguments[0]-eq'--version'){return "Docker version $($shadowLock.docker.cli_version)"};return ''
+        } | Out-Null
+        Assert-Equal @($script:shadowCommands | Where-Object { $_ -match 'config --quiet$' }).Count 0 'shadowed Compose winner never launches Compose configuration validation'
+
+        [IO.File]::WriteAllText($fakeCompose, 'not a PE executable')
+        try {
+            $script:untrustedComposeCommands = New-Object 'Collections.Generic.List[string]'
+            Get-NativeWindowsProbe -Lock $stateLock -RepoRoot $repoRoot -Profile StatePlaneIntegration -MetadataPaths $stateMetadata -CommandRunner {
+                param($Path,$Arguments)
+                $script:untrustedComposeCommands.Add("$Path $($Arguments -join ' ')")
+                if($Path-ieq$stateLock.docker.cli_path-and$Arguments[0]-eq'--version'){return "Docker version $($stateLock.docker.cli_version)"}
+                if($Path-ieq$stateLock.docker.compose_plugin_path-and$Arguments[0]-eq'version'){return $stateLock.docker.compose_version}
+                return ''
+            } | Out-Null
+            Assert-Equal @($script:untrustedComposeCommands | Where-Object { $_ -match 'config --quiet$' }).Count 0 'non-PE Compose candidate never launches Compose configuration validation'
+        }
+        finally { Write-FakePeAmd64 $fakeCompose }
+
+        $script:driftCommands = New-Object 'Collections.Generic.List[string]'
+        Get-NativeWindowsProbe -Lock $stateLock -RepoRoot $repoRoot -Profile StatePlaneIntegration -MetadataPaths $stateMetadata -CommandRunner {
+            param($Path,$Arguments)
+            $script:driftCommands.Add("$Path $($Arguments -join ' ')")
+            if($Path-ieq$stateLock.docker.cli_path-and$Arguments[0]-eq'--version'){return 'Docker version 0.0.1'}
+            if($Path-ieq$stateLock.docker.compose_plugin_path-and$Arguments[0]-eq'version'){return $stateLock.docker.compose_version}
+            return ''
+        } | Out-Null
+        Assert-Equal @($script:driftCommands | Where-Object { $_ -match 'config --quiet$' }).Count 0 'Docker version drift never launches Compose configuration validation'
+    }
+    finally { $env:DOCKER_CONFIG = $previousDockerConfigForScopes }
 
     $missingProductInstances = Join-Path $testTemp 'vs-missing-product'
     $missingProductStateRoot = Join-Path $missingProductInstances 'instance'
