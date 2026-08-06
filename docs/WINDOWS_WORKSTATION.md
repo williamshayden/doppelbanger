@@ -6,6 +6,8 @@ The Windows VST3 lane is native Windows x86_64 only. Use an ownership-correct cl
 
 `HeadlessVst3` is the strict build profile. It requires the exact versions and provenance recorded in `tools/windows-toolchain.lock.json`, MSVC target `x86_64-pc-windows-msvc`, PE32/PE32+ AMD64 executables, the Docker Desktop Compose plugin, and the `desktop-linux` Linux/amd64 engine. `Compatibility` reports the same facts for diagnosis but treats version drift as a warning; it is not release or build evidence.
 
+Portable CMake, Ninja, Node, and pluginval archives live in versioned directories beneath `%LOCALAPPDATA%\Programs\doppelbanger-devtools`; pluginval uses `pluginval-1.0.4`. Rust discovery uses only the physical `%RUSTUP_HOME%\toolchains\1.97.1-x86_64-pc-windows-msvc` installation (or `%USERPROFILE%\.rustup` when `RUSTUP_HOME` is unset), including its rustup manifests and physical rustfmt/clippy binaries. The doctor never invokes `%USERPROFILE%\.cargo\bin` rustup proxies.
+
 Run the read-only doctor from native PowerShell 5.1 or later:
 
 ```powershell
@@ -13,9 +15,11 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\doctor_windows.ps1 -Profile HeadlessVst3 -Json
 ```
 
-`-ExecutionPolicy Bypass` applies only to that PowerShell process. The doctor reads process ancestry, executable metadata, registry and disk state, Docker information, Git provenance, pending-reboot markers, and WebView2/Ableton presence. It never installs software, starts or stops services, changes PATH or configuration, or modifies Ableton. It writes only when `-ReportPath` explicitly names a path beneath the ignored `var\` evidence tree.
+`-ExecutionPolicy Bypass` applies only to that PowerShell process. The doctor reads process ancestry, executable metadata, registry and disk state, Docker information, directory-owner SID and global Git configuration, pending-reboot markers, and WebView2/Ableton presence. It never installs software, starts or stops services, changes PATH or configuration, or modifies Ableton. It writes only when `-ReportPath` explicitly names a canonical, non-reparse path beneath the ignored repository `var\` evidence tree.
 
-Use `scripts\run_native_tool.ps1` for every native build, validator, and Docker command. `-Describe` resolves and validates paths and the imported MSVC/SDK environment without launching the requested tool. The wrapper rejects ambient shadows, WSL ancestry, GNU/ELF executables, an unexpected Visual Studio instance, and a user Compose plugin that wins over Docker Desktop.
+Use `scripts\run_native_tool.ps1` for every native build, validator, and Docker command. Live execution and live `-Describe` are hard-bound to the checked-in lock. `-Describe` reads metadata and resolves the environment that would be imported without running VsDevCmd, rustup proxies, version commands, Docker commands, or the requested tool. Execution imports the exact VS instance, then verifies `VCToolsInstallDir`, `WindowsSDKVersion`, `INCLUDE`, `LIB`, and the physical cl/link/lib/dumpbin executables before launch.
+
+Docker Compose plugin resolution follows Docker CLI 29.6.2 order: configured `cliPluginsExtraDirs` in list order, then the effective `DOCKER_CONFIG\cli-plugins` (or `%USERPROFILE%\.docker\cli-plugins`), then `%ProgramFiles%\Docker\cli-plugins`. The first existing `docker-compose.exe` wins. Any winner other than the locked Docker Desktop plugin is rejected on every Docker invocation; diagnostics never move or delete a shadow.
 
 ## Native and container boundary
 

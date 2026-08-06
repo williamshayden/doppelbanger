@@ -1,6 +1,10 @@
 {
   "extends": "windows-native-valid.json",
   "docker_compose_plugin_path": "C:\\Users\\William\\.docker\\cli-plugins\\docker-compose.exe",
+  "docker_compose_candidates": [
+    "C:\\Users\\William\\.docker\\cli-plugins\\docker-compose.exe",
+    "C:\\Program Files\\Docker\\cli-plugins\\docker-compose.exe"
+  ],
   "docker_user_compose_plugin_path": "C:\\Users\\William\\.docker\\cli-plugins\\docker-compose.exe",
   "expected_code": "DBDOC_DOCKER_PLUGIN_SHADOW"
 }
