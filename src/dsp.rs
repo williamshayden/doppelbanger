@@ -8,8 +8,10 @@ use crate::{
 
 pub struct MasteringProcessor {
     filters: [StereoBiquad; 3],
-    gain: f32,
-    bypass: bool,
+    current: ProcessorTargets,
+    target: ProcessorTargets,
+    ramp_samples: u32,
+    ramp_remaining: u32,
 }
 
 impl MasteringProcessor {
@@ -22,15 +24,39 @@ impl MasteringProcessor {
             ))
         })?;
 
+        let targets = ProcessorTargets::new(
+            plan.bypass,
+            plan.applied_gain_db,
+            [filters[0].gain_db, filters[1].gain_db, filters[2].gain_db],
+            sample_rate_hz,
+        )?;
+
         Ok(Self {
             filters: [
-                StereoBiquad::new(&filters[0], sample_rate_hz)?,
-                StereoBiquad::new(&filters[1], sample_rate_hz)?,
-                StereoBiquad::new(&filters[2], sample_rate_hz)?,
+                StereoBiquad::new(targets.filter_coefficients[0]),
+                StereoBiquad::new(targets.filter_coefficients[1]),
+                StereoBiquad::new(targets.filter_coefficients[2]),
             ],
-            gain: 10.0_f32.powf(plan.applied_gain_db as f32 / 20.0),
-            bypass: plan.bypass,
+            current: targets,
+            target: targets,
+            ramp_samples: (sample_rate_hz / 100).max(1),
+            ramp_remaining: 0,
         })
+    }
+
+    pub(crate) fn prepare_runtime_targets(
+        &self,
+        bypass: bool,
+        applied_gain_db: f64,
+        eq_gains_db: [f64; 3],
+        sample_rate_hz: u32,
+    ) -> Result<ProcessorTargets> {
+        ProcessorTargets::new(bypass, applied_gain_db, eq_gains_db, sample_rate_hz)
+    }
+
+    pub(crate) fn apply_runtime_targets(&mut self, targets: ProcessorTargets) {
+        self.target = targets;
+        self.ramp_remaining = self.ramp_samples;
     }
 
     pub fn process_interleaved(
@@ -40,14 +66,6 @@ impl MasteringProcessor {
         if !samples.len().is_multiple_of(2) {
             return Err(ProcessError::OddSampleCount);
         }
-        if self.bypass {
-            if samples.iter().any(|sample| !sample.is_finite()) {
-                samples.fill(0.0);
-                return Err(ProcessError::NonFiniteOutput);
-            }
-            return Ok(());
-        }
-
         for frame in samples.chunks_exact_mut(2) {
             match self.process_frame(frame[0], frame[1]) {
                 Some((left, right)) => {
@@ -71,19 +89,6 @@ impl MasteringProcessor {
         if left.len() != right.len() {
             return Err(ProcessError::ChannelLengthMismatch);
         }
-        if self.bypass {
-            if left
-                .iter()
-                .chain(right.iter())
-                .any(|sample| !sample.is_finite())
-            {
-                left.fill(0.0);
-                right.fill(0.0);
-                return Err(ProcessError::NonFiniteOutput);
-            }
-            return Ok(());
-        }
-
         for index in 0..left.len() {
             match self.process_frame(left[index], right[index]) {
                 Some((processed_left, processed_right)) => {
@@ -111,15 +116,138 @@ impl MasteringProcessor {
         0
     }
 
-    fn process_frame(&mut self, mut left: f32, mut right: f32) -> Option<(f32, f32)> {
+    fn process_frame(&mut self, left: f32, right: f32) -> Option<(f32, f32)> {
+        if !left.is_finite() || !right.is_finite() {
+            return None;
+        }
+        self.advance_ramp();
+        if self.current.wet == 0.0 {
+            return Some((left, right));
+        }
+
+        let dry_left = left;
+        let dry_right = right;
+        let mut left = left;
+        let mut right = right;
         for filter in &mut self.filters {
             left = filter.left.run(left);
             right = filter.right.run(right);
         }
-        left *= self.gain;
-        right *= self.gain;
+        left *= self.current.gain;
+        right *= self.current.gain;
+        if self.current.wet != 1.0 {
+            left = dry_left + self.current.wet * (left - dry_left);
+            right = dry_right + self.current.wet * (right - dry_right);
+        }
         (left.is_finite() && right.is_finite()).then_some((left, right))
     }
+
+    fn advance_ramp(&mut self) {
+        if self.ramp_remaining == 0 {
+            return;
+        }
+        if self.ramp_remaining == 1 {
+            self.current = self.target;
+        } else {
+            self.current = self
+                .current
+                .step_toward(self.target, self.ramp_remaining as f32);
+        }
+        self.ramp_remaining -= 1;
+        for (filter, coefficients) in self
+            .filters
+            .iter_mut()
+            .zip(self.current.filter_coefficients)
+        {
+            filter.update_coefficients(coefficients);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ProcessorTargets {
+    filter_coefficients: [Coefficients<f32>; 3],
+    gain: f32,
+    wet: f32,
+}
+
+impl ProcessorTargets {
+    fn new(
+        bypass: bool,
+        applied_gain_db: f64,
+        eq_gains_db: [f64; 3],
+        sample_rate_hz: u32,
+    ) -> Result<Self> {
+        Ok(Self {
+            filter_coefficients: [
+                StereoBiquad::coefficients(
+                    EqFilterKindV1::LowShelf,
+                    120.0,
+                    0.707,
+                    eq_gains_db[0],
+                    sample_rate_hz,
+                )?,
+                StereoBiquad::coefficients(
+                    EqFilterKindV1::Bell,
+                    1_000.0,
+                    0.5,
+                    eq_gains_db[1],
+                    sample_rate_hz,
+                )?,
+                StereoBiquad::coefficients(
+                    EqFilterKindV1::HighShelf,
+                    6_000.0,
+                    0.707,
+                    eq_gains_db[2],
+                    sample_rate_hz,
+                )?,
+            ],
+            gain: 10.0_f32.powf(applied_gain_db as f32 / 20.0),
+            wet: if bypass { 0.0 } else { 1.0 },
+        })
+    }
+
+    fn step_toward(self, target: Self, remaining: f32) -> Self {
+        Self {
+            filter_coefficients: [
+                step_coefficients(
+                    self.filter_coefficients[0],
+                    target.filter_coefficients[0],
+                    remaining,
+                ),
+                step_coefficients(
+                    self.filter_coefficients[1],
+                    target.filter_coefficients[1],
+                    remaining,
+                ),
+                step_coefficients(
+                    self.filter_coefficients[2],
+                    target.filter_coefficients[2],
+                    remaining,
+                ),
+            ],
+            gain: step(self.gain, target.gain, remaining),
+            wet: step(self.wet, target.wet, remaining),
+        }
+    }
+}
+
+fn step_coefficients(
+    current: Coefficients<f32>,
+    target: Coefficients<f32>,
+    remaining: f32,
+) -> Coefficients<f32> {
+    Coefficients {
+        a1: step(current.a1, target.a1, remaining),
+        a2: step(current.a2, target.a2, remaining),
+        b0: step(current.b0, target.b0, remaining),
+        b1: step(current.b1, target.b1, remaining),
+        b2: step(current.b2, target.b2, remaining),
+    }
+}
+
+fn step(current: f32, target: f32, remaining: f32) -> f32 {
+    current + (target - current) / remaining
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,28 +279,41 @@ struct StereoBiquad {
 }
 
 impl StereoBiquad {
-    fn new(filter: &EqFilterV1, sample_rate_hz: u32) -> Result<Self> {
-        let filter_type = match filter.kind {
-            EqFilterKindV1::LowShelf => Type::LowShelf(filter.gain_db as f32),
-            EqFilterKindV1::Bell => Type::PeakingEQ(filter.gain_db as f32),
-            EqFilterKindV1::HighShelf => Type::HighShelf(filter.gain_db as f32),
+    fn new(coefficients: Coefficients<f32>) -> Self {
+        Self {
+            left: DirectForm2Transposed::new(coefficients),
+            right: DirectForm2Transposed::new(coefficients),
+        }
+    }
+
+    fn coefficients(
+        kind: EqFilterKindV1,
+        frequency_hz: f64,
+        q: f64,
+        gain_db: f64,
+        sample_rate_hz: u32,
+    ) -> Result<Coefficients<f32>> {
+        let filter_type = match kind {
+            EqFilterKindV1::LowShelf => Type::LowShelf(gain_db as f32),
+            EqFilterKindV1::Bell => Type::PeakingEQ(gain_db as f32),
+            EqFilterKindV1::HighShelf => Type::HighShelf(gain_db as f32),
         };
-        let coefficients = Coefficients::<f32>::from_params(
+        Coefficients::<f32>::from_params(
             filter_type,
             (sample_rate_hz as f32).hz(),
-            (filter.frequency_hz as f32).hz(),
-            filter.q as f32,
+            (frequency_hz as f32).hz(),
+            q as f32,
         )
         .map_err(|error| {
             DoppelbangerError::InvalidPlan(format!(
-                "cannot create {:?} filter at {} Hz: {error:?}",
-                filter.kind, filter.frequency_hz
+                "cannot create {kind:?} filter at {frequency_hz} Hz: {error:?}"
             ))
-        })?;
-        Ok(Self {
-            left: DirectForm2Transposed::new(coefficients),
-            right: DirectForm2Transposed::new(coefficients),
         })
+    }
+
+    fn update_coefficients(&mut self, coefficients: Coefficients<f32>) {
+        self.left.update_coefficients(coefficients);
+        self.right.update_coefficients(coefficients);
     }
 }
 

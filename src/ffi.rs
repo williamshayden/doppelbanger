@@ -8,7 +8,9 @@ use crate::{
 };
 
 mod process;
+mod update;
 pub use process::db_processor_process_f32;
+pub use update::{DbMeterSnapshotV1, db_processor_get_meter_v1, db_processor_set_plan_v1};
 
 pub const DB_ABI_VERSION: u32 = 1;
 pub const DB_PLAN_SCHEMA_VERSION: u32 = 1;
@@ -44,7 +46,10 @@ pub struct DbRuntimePlanV1 {
 
 pub struct DbProcessor {
     processor: MasteringProcessor,
+    sample_rate_hz: u32,
     max_block_frames: u32,
+    input_peak: [f32; 2],
+    output_peak: [f32; 2],
     faulted: bool,
     #[cfg(test)]
     panic_next_process: bool,
@@ -101,7 +106,10 @@ pub unsafe extern "C" fn db_processor_create(
         unsafe {
             *output = Box::into_raw(Box::new(DbProcessor {
                 processor,
+                sample_rate_hz,
                 max_block_frames,
+                input_peak: [0.0; 2],
+                output_peak: [0.0; 2],
                 faulted: false,
                 #[cfg(test)]
                 panic_next_process: false,
@@ -126,6 +134,8 @@ pub unsafe extern "C" fn db_processor_reset(processor: *mut DbProcessor) -> DbSt
         // SAFETY: The caller owns a live handle returned by db_processor_create.
         unsafe {
             (*processor).processor.reset();
+            (*processor).input_peak = [0.0; 2];
+            (*processor).output_peak = [0.0; 2];
             (*processor).faulted = false;
         }
         DbStatus::Ok
@@ -168,11 +178,11 @@ pub unsafe extern "C" fn db_processor_destroy(processor: *mut DbProcessor) -> Db
     })
 }
 
-fn ffi_guard(operation: impl FnOnce() -> DbStatus) -> DbStatus {
+pub(super) fn ffi_guard(operation: impl FnOnce() -> DbStatus) -> DbStatus {
     catch_unwind(AssertUnwindSafe(operation)).unwrap_or(DbStatus::Panic)
 }
 
-fn runtime_plan_version_is_compatible(plan: &DbRuntimePlanV1) -> bool {
+pub(super) fn runtime_plan_version_is_compatible(plan: &DbRuntimePlanV1) -> bool {
     plan.abi_version == DB_ABI_VERSION
         && plan.plan_schema_version == DB_PLAN_SCHEMA_VERSION
         && plan.processor_version == DB_PROCESSOR_VERSION

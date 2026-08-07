@@ -54,8 +54,13 @@ pub unsafe extern "C" fn db_processor_process_f32(
         if std::mem::take(&mut processor.panic_next_process) {
             std::panic::resume_unwind(Box::new("test-induced processor panic"));
         }
+        let input_peak = block_peaks(left, right);
         match processor.processor.process_planar(left, right) {
-            Ok(()) => DbStatus::Ok,
+            Ok(()) => {
+                processor.input_peak = input_peak;
+                processor.output_peak = block_peaks(left, right);
+                DbStatus::Ok
+            }
             Err(_) => {
                 processor.faulted = true;
                 DbStatus::ProcessFault
@@ -71,6 +76,16 @@ pub unsafe extern "C" fn db_processor_process_f32(
             DbStatus::Panic
         }
     }
+}
+
+fn block_peaks(left: &[f32], right: &[f32]) -> [f32; 2] {
+    [
+        left.iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs())),
+        right
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs())),
+    ]
 }
 
 fn buffers_are_aligned(left: *mut f32, right: *mut f32) -> bool {
