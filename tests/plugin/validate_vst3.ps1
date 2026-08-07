@@ -204,6 +204,17 @@ function Invoke-DbVst3Validation {
         if ($processResult.PSObject.Properties['LaunchError']) { $launchError = [string]$processResult.LaunchError }
     }
 
+    if ([string]::IsNullOrEmpty($validationError) -and
+        [string]::IsNullOrEmpty($launchError) -and
+        -not $timedOut -and
+        $exitCode -eq 0) {
+        $expectedVendor = 'Goblin City Records'
+        $vendorPattern = "(?m)^[ `t]*vendor[ `t]*=[ `t]*$([regex]::Escape($expectedVendor))[ `t]*`r?$"
+        if (-not [regex]::IsMatch($standardOutput, $vendorPattern)) {
+            $validationError = "DBVST3_IDENTITY: validator factory vendor must be $expectedVendor"
+        }
+    }
+
     if (-not [string]::IsNullOrEmpty($validationError)) {
         $standardError = $validationError
     }

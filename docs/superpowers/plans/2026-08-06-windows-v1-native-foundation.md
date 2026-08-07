@@ -164,7 +164,7 @@ Each later plan begins only after the preceding milestone is green and independe
 - [ ] **Step 4: Write the failing lifecycle test.** Instantiate the component, configure stereo 32-bit processing, process silence and an impulse, automate each parameter, save state, create a new instance, restore, and prove equivalent output and parameter values. Cover unsupported sample format, oversized block, corrupt state, reset, and destruction with the editor absent.
 - [ ] **Step 5: Run lifecycle test red.** Expected: FAIL because the plugin class does not exist.
 - [ ] **Step 6: Implement the minimal plugin.** Own one Rust handle per active processor, expose one stereo input/output bus and no MIDI/sidechain, accept 32-bit samples, translate host automation to validated ABI plans, process one bounded block, report Rust latency, and fail safely without throwing across the host boundary.
-- [ ] **Step 7: Add the VST3 bundle target.** Product name `Doppelbanger`, vendor `William Hayden`, category `Fx|Mastering`, bundle output under `build/windows-msvc-x64-release/artefacts/Release/VST3/Doppelbanger.vst3`, and no post-build copy to a system directory.
+- [ ] **Step 7: Add the VST3 bundle target.** Product name `Doppelbanger`, vendor `Goblin City Records`, category `Fx|Mastering`, bundle output under `build/windows-msvc-x64-release/artefacts/Release/VST3/Doppelbanger.vst3`, and no post-build copy to a system directory.
 - [ ] **Step 8: Run all native gates.** Configure, build, run both plugin tests and all Rust/ABI tests. Inspect the produced `.vst3` binaries as PE32+ x64 and verify no Rust/CMake/Node/PowerShell executable is a runtime dependency.
 - [ ] **Step 9: Commit.** Commit `feat: add headless Doppelbanger VST3`.
 

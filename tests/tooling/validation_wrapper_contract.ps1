@@ -12,6 +12,7 @@ if (-not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {
 . $wrapperPath
 
 $script:passed = 0
+$expectedVendorOutput = "Factory Info:`r`n`tvendor = Goblin City Records`r`n"
 function Assert-True {
     param([bool]$Condition, [string]$Message)
 
@@ -97,7 +98,7 @@ function Invoke-WrapperFixture {
 $fixture = New-ValidationFixture
 try {
     $successInvocations = [System.Collections.Generic.List[object]]::new()
-    $successResult = Invoke-WrapperFixture -Fixture $fixture -ProcessLauncher (New-ProcessLauncher -Invocations $successInvocations)
+    $successResult = Invoke-WrapperFixture -Fixture $fixture -ProcessLauncher (New-ProcessLauncher -Invocations $successInvocations -StdOut $expectedVendorOutput)
 
     Assert-True $successResult.Success 'a completed zero validator exit succeeds'
     Assert-Equal $successInvocations.Count 1 'the validator is launched exactly once'
@@ -112,13 +113,19 @@ try {
     Assert-True ($null -ne [datetime]::Parse($successResult.EndedUtc)) 'result records end UTC'
     Assert-True (Test-Path -LiteralPath (Join-Path $fixture.EvidencePath 'validator.stdout.txt') -PathType Leaf) 'stdout is retained separately'
     Assert-True (Test-Path -LiteralPath (Join-Path $fixture.EvidencePath 'validator.stderr.txt') -PathType Leaf) 'stderr is retained separately'
-    Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $fixture.EvidencePath 'validator.stdout.txt'))) 'validator stdout' 'stdout evidence preserves validator output'
+    Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $fixture.EvidencePath 'validator.stdout.txt'))) $expectedVendorOutput 'stdout evidence preserves validator output'
     Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $fixture.EvidencePath 'validator.stderr.txt'))) 'validator stderr' 'stderr evidence preserves validator output'
     $persistedResult = Get-Content -LiteralPath (Join-Path $fixture.EvidencePath 'validator.result.json') -Raw | ConvertFrom-Json
     Assert-Equal $persistedResult.ValidatorPath $fixture.ValidatorPath 'machine-readable evidence records the exact validator path'
     Assert-Equal $persistedResult.PluginPath $fixture.PluginPath 'machine-readable evidence records the exact plugin path'
     Assert-Equal ([int]$persistedResult.ValidatorExitCode) 0 'machine-readable evidence records the real exit code'
     Assert-True ([bool]$persistedResult.Success) 'machine-readable evidence records success only after evidence is written'
+
+    $wrongVendorInvocations = [System.Collections.Generic.List[object]]::new()
+    $wrongVendorResult = Invoke-WrapperFixture -Fixture $fixture -ProcessLauncher (New-ProcessLauncher -Invocations $wrongVendorInvocations -StdOut "Factory Info:`r`n`tvendor = William Hayden`r`n")
+    Assert-True (-not $wrongVendorResult.Success) 'a validator report with the previous distributor cannot report success'
+    Assert-Equal $wrongVendorResult.ValidationError 'DBVST3_IDENTITY: validator factory vendor must be Goblin City Records' 'a distributor mismatch has a stable validation error'
+    Assert-Equal $wrongVendorInvocations.Count 1 'a distributor mismatch is detected from the real validator report'
 
     $invalidTargets = @(
         [pscustomobject]@{ Name = 'relative validator'; Validator = 'validator.exe'; Plugin = $fixture.PluginPath },
@@ -174,7 +181,7 @@ try {
     }
 
     $shortWriteInvocations = [System.Collections.Generic.List[object]]::new()
-    $shortWriteResult = Invoke-WrapperFixture -Fixture $fixture -ProcessLauncher (New-ProcessLauncher -Invocations $shortWriteInvocations) -EvidenceWriter {
+    $shortWriteResult = Invoke-WrapperFixture -Fixture $fixture -ProcessLauncher (New-ProcessLauncher -Invocations $shortWriteInvocations -StdOut $expectedVendorOutput) -EvidenceWriter {
         param([string]$Path, [string]$Content)
         return $false
     }

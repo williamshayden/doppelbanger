@@ -44,7 +44,7 @@ Each validator run retains:
 - `validator.result.json` with exact paths, UTC start/end, timeout, timed-out flag, real validator exit code, and outcome;
 - native CTest and Rust test reports when produced by CI.
 
-The Windows workflow performs a recursive checkout, uses Rust `1.97.1` and an x64 MSVC environment, runs format, warnings-denied clippy, locked Rust tests, the dependency and PowerShell contracts, Release configure/build/CTest, and the official validator. Its narrow artifact contains only the unsigned `Doppelbanger.vst3` bundle and sanitized validator/test reports. It does not upload validator binaries, build intermediates, caches, source, private audio, or machine-specific paths. It does not start Docker, databases, services, or copy a plug-in to a system directory.
+The Windows workflow performs a recursive checkout, uses Rust `1.97.1` and an x64 MSVC environment, runs format, warnings-denied clippy, locked Rust tests, the dependency and PowerShell contracts, Release configure/build/CTest, and the official validator. Validation also requires the VST3 factory to advertise `Goblin City Records` as its vendor/distributor. Its narrow artifact contains only the unsigned `Doppelbanger.vst3` bundle and sanitized validator/test reports. It does not upload validator binaries, build intermediates, caches, source, private audio, or machine-specific paths. It does not start Docker, databases, services, or copy a plug-in to a system directory.
 
 ## Deliberately unperformed manual host gate
 

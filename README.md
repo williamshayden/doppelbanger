@@ -4,8 +4,8 @@
 
 doppelbanger currently has a native, headless Windows x64 VST3 foundation. The
 VST3 plugin uses the shared Rust DSP core, exposes the Task 4 state and automation
-surface, and is built and checked entirely from native Windows tooling. Its
-exact unsigned bundle is:
+surface, advertises Goblin City Records as its vendor/distributor, and is built
+and checked entirely from native Windows tooling. Its exact unsigned bundle is:
 
 ```text
 build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3
