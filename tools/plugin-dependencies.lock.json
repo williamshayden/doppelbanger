@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "dependencies": [
+    {
+      "path": "third_party/iPlug2",
+      "url": "https://github.com/iPlug2/iPlug2.git",
+      "sha": "5c2df9dce3f5258acfeff3846a6a9563f382212c"
+    },
+    {
+      "path": "third_party/vst3sdk",
+      "url": "https://github.com/steinbergmedia/vst3sdk.git",
+      "sha": "58f8da7936800732561402d7936584ca4505de07"
+    },
+    {
+      "path": "third_party/vst3sdk/base",
+      "url": "https://github.com/steinbergmedia/vst3_base",
+      "sha": "3d2e82f8e6bff59c1d8b7a27491a29c2286b5206"
+    },
+    {
+      "path": "third_party/vst3sdk/cmake",
+      "url": "https://github.com/steinbergmedia/vst3_cmake",
+      "sha": "de6e54eeaaab35b7145f5c32c279b5e892146e04"
+    },
+    {
+      "path": "third_party/vst3sdk/doc",
+      "url": "https://github.com/steinbergmedia/vst3_doc",
+      "sha": "6d4737c9e70750056e731d88d49aa06eefc8a1a4"
+    },
+    {
+      "path": "third_party/vst3sdk/pluginterfaces",
+      "url": "https://github.com/steinbergmedia/vst3_pluginterfaces",
+      "sha": "31d6eeba6daaa3e2a8bfbe3e7a90ca0b7fbfbc1c"
+    },
+    {
+      "path": "third_party/vst3sdk/public.sdk",
+      "url": "https://github.com/steinbergmedia/vst3_public_sdk",
+      "sha": "a3911a4615dabbfdfd9d181ee26b05c70c289a95"
+    },
+    {
+      "path": "third_party/vst3sdk/tutorials",
+      "url": "https://github.com/steinbergmedia/vst3_tutorials",
+      "sha": "33b73dfbb87f3fde3bce8c0a10cae934dc66ad34"
+    },
+    {
+      "path": "third_party/vst3sdk/vstgui4",
+      "url": "https://github.com/steinbergmedia/vstgui",
+      "sha": "76823bdbe286e4bdb9f79ab8986af5ce7202336c"
+    }
+  ]
+}
