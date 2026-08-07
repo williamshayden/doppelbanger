@@ -1,6 +1,6 @@
-use std::fmt;
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
+use std::fmt;
 
 use biquad::{Biquad, Coefficients, DirectForm2Transposed, ToHertz, Type};
 
@@ -14,11 +14,18 @@ const EQ_ZERO_INDEX: usize = 300;
 const OUTPUT_ZERO_INDEX: usize = 1_200;
 
 #[cfg(test)]
-static COEFFICIENT_DESIGN_COUNT: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    static COEFFICIENT_DESIGN_COUNT: Cell<usize> = const { Cell::new(0) };
+}
 
 #[cfg(test)]
 pub(crate) fn coefficient_design_count_for_tests() -> usize {
-    COEFFICIENT_DESIGN_COUNT.load(Ordering::Relaxed)
+    COEFFICIENT_DESIGN_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+fn record_coefficient_design_for_tests() {
+    COEFFICIENT_DESIGN_COUNT.with(|count| count.set(count.get() + 1));
 }
 
 pub struct MasteringProcessor {
@@ -425,7 +432,7 @@ impl StereoBiquad {
         sample_rate_hz: u32,
     ) -> Result<Coefficients<f32>> {
         #[cfg(test)]
-        COEFFICIENT_DESIGN_COUNT.fetch_add(1, Ordering::Relaxed);
+        record_coefficient_design_for_tests();
         let filter_type = match kind {
             EqFilterKindV1::LowShelf => Type::LowShelf(gain_db as f32),
             EqFilterKindV1::Bell => Type::PeakingEQ(gain_db as f32),
@@ -514,4 +521,25 @@ fn validate_runtime_plan(plan: &MasteringPlanV1, sample_rate_hz: u32) -> Result<
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProcessorTargets, coefficient_design_count_for_tests};
+
+    #[test]
+    fn coefficient_design_observation_is_thread_local() {
+        let observer_before = coefficient_design_count_for_tests();
+        let (worker_before, worker_after) = std::thread::spawn(|| {
+            let before = coefficient_design_count_for_tests();
+            ProcessorTargets::new(false, 0.0, [0.5, -1.5, 2.0], 48_000)
+                .expect("worker coefficient design succeeds");
+            (before, coefficient_design_count_for_tests())
+        })
+        .join()
+        .expect("coefficient-design worker joins");
+
+        assert_eq!(worker_after, worker_before + 3);
+        assert_eq!(coefficient_design_count_for_tests(), observer_before);
+    }
 }
