@@ -105,7 +105,7 @@ target_compile_definitions(Doppelbanger-vst3 PRIVATE
   SAMPLE_TYPE_FLOAT)
 target_compile_features(Doppelbanger-vst3 PRIVATE cxx_std_17)
 target_compile_options(Doppelbanger-vst3 PRIVATE
-  /W4 /EHsc /wd4100 /wd4456 /wd4701)
+  /W4 /WX /EHsc /wd4100 /wd4456 /wd4701)
 target_link_libraries(Doppelbanger-vst3 PRIVATE
   iPlug2::VST3
   doppelbanger_rust)
