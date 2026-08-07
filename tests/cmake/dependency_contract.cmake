@@ -184,21 +184,83 @@ if(NOT preset_generator STREQUAL "Ninja" OR
   message(FATAL_ERROR "dependency contract: windows-msvc-x64-release preset is not deterministic")
 endif()
 
-string(JSON build_preset_count LENGTH "${presets_json}" buildPresets)
-set(rust_build_preset_index -1)
-math(EXPR build_preset_last_index "${build_preset_count} - 1")
-foreach(build_preset_index RANGE 0 ${build_preset_last_index})
-  string(JSON build_configure_preset GET "${presets_json}" buildPresets ${build_preset_index} configurePreset)
-  if(build_configure_preset STREQUAL "windows-msvc-x64-release")
-    set(rust_build_preset_index ${build_preset_index})
+function(find_named_build_preset_index expected_name output_variable)
+  string(JSON build_preset_count LENGTH "${presets_json}" buildPresets)
+  set(found_index -1)
+  if(build_preset_count GREATER 0)
+    math(EXPR build_preset_last_index "${build_preset_count} - 1")
+    foreach(build_preset_index RANGE 0 ${build_preset_last_index})
+      string(JSON build_preset_name GET
+        "${presets_json}" buildPresets ${build_preset_index} name)
+      if(build_preset_name STREQUAL expected_name)
+        if(NOT found_index EQUAL -1)
+          message(FATAL_ERROR
+            "dependency contract: duplicate build preset named ${expected_name}")
+        endif()
+        set(found_index ${build_preset_index})
+      endif()
+    endforeach()
   endif()
-endforeach()
-if(rust_build_preset_index EQUAL -1)
-  message(FATAL_ERROR "dependency contract: missing Rust build preset")
+  set(${output_variable} ${found_index} PARENT_SCOPE)
+endfunction()
+
+function(get_build_preset_targets preset_index output_variable)
+  string(JSON target_count LENGTH
+    "${presets_json}" buildPresets ${preset_index} targets)
+  set(actual_targets)
+  if(target_count GREATER 0)
+    math(EXPR target_last_index "${target_count} - 1")
+    foreach(target_index RANGE 0 ${target_last_index})
+      string(JSON actual_target GET
+        "${presets_json}" buildPresets ${preset_index} targets ${target_index})
+      list(APPEND actual_targets "${actual_target}")
+    endforeach()
+  endif()
+  set(${output_variable} "${actual_targets}" PARENT_SCOPE)
+endfunction()
+
+find_named_build_preset_index(
+  "windows-msvc-x64-release" release_build_preset_index)
+if(release_build_preset_index EQUAL -1)
+  message(FATAL_ERROR
+    "dependency contract: missing build preset named windows-msvc-x64-release")
 endif()
-string(JSON rust_build_target GET "${presets_json}" buildPresets ${rust_build_preset_index} targets 0)
-if(NOT rust_build_target STREQUAL "doppelbanger_rust")
-  message(FATAL_ERROR "dependency contract: Rust build preset must build doppelbanger_rust")
+string(JSON release_build_configure_preset GET
+  "${presets_json}" buildPresets ${release_build_preset_index} configurePreset)
+if(NOT release_build_configure_preset STREQUAL "windows-msvc-x64-release")
+  message(FATAL_ERROR
+    "dependency contract: windows-msvc-x64-release build preset must use its matching configure preset")
+endif()
+get_build_preset_targets(${release_build_preset_index} release_build_targets)
+set(expected_release_build_targets
+  StateCodecTests
+  EditorBridgeTests
+  PluginLifecycleTests
+  Doppelbanger-vst3)
+if(NOT "${release_build_targets}" STREQUAL "${expected_release_build_targets}")
+  message(FATAL_ERROR
+    "dependency contract: windows-msvc-x64-release targets must be exactly "
+    "[${expected_release_build_targets}]; actual [${release_build_targets}]")
+endif()
+
+find_named_build_preset_index(
+  "windows-msvc-x64-release-rust" rust_build_preset_index)
+if(rust_build_preset_index EQUAL -1)
+  message(FATAL_ERROR
+    "dependency contract: missing build preset named windows-msvc-x64-release-rust")
+endif()
+string(JSON rust_build_configure_preset GET
+  "${presets_json}" buildPresets ${rust_build_preset_index} configurePreset)
+if(NOT rust_build_configure_preset STREQUAL "windows-msvc-x64-release")
+  message(FATAL_ERROR
+    "dependency contract: windows-msvc-x64-release-rust must use the release configure preset")
+endif()
+get_build_preset_targets(${rust_build_preset_index} rust_build_targets)
+set(expected_rust_build_targets doppelbanger_rust)
+if(NOT "${rust_build_targets}" STREQUAL "${expected_rust_build_targets}")
+  message(FATAL_ERROR
+    "dependency contract: windows-msvc-x64-release-rust targets must be exactly "
+    "[${expected_rust_build_targets}]; actual [${rust_build_targets}]")
 endif()
 
 require_match("${build_rust}" "Rust build must use the MSVC target" "--target[ \t\r\n]+x86_64-pc-windows-msvc")
