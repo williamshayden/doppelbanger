@@ -72,7 +72,12 @@ function New-CommandRunner {
     param([System.Collections.Generic.List[object]]$Invocations)
     return {
         param([string]$Path, [string[]]$Arguments, [string]$WorkingDirectory)
-        $Invocations.Add([pscustomobject]@{ Path = $Path; Arguments = @($Arguments); WorkingDirectory = $WorkingDirectory })
+        $Invocations.Add([pscustomobject]@{
+            Path = $Path
+            Arguments = @($Arguments)
+            WorkingDirectory = $WorkingDirectory
+            PlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+        })
         if ($Path.EndsWith('rustc.exe', [StringComparison]::OrdinalIgnoreCase)) {
             return [pscustomobject]@{ Output = "rustc 1.97.1`nhost: x86_64-pc-windows-msvc"; ExitCode = 0 }
         }
@@ -477,6 +482,23 @@ $uiTestNodeInvocations = @($uiTestResult.Invocations | Where-Object { $_.Path.En
 Assert-Equal $uiTestNodeInvocations.Count 1 'ui-test verifies the exact checked native Node executable'
 Assert-ArgumentVector $uiTestNodeInvocations[0] @('--version') 'ui-test verifies the required Node version'
 
+$savedPlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+try {
+    [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'preserved-prior-value', 'Process')
+    $uiInstallResult = Invoke-DevFixture -Task ui-install
+    $uiInstallNpmInvocations = @($uiInstallResult.Invocations | Where-Object { $_.Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) })
+    Assert-True ([string]::IsNullOrEmpty($uiInstallResult.Error)) 'ui-install succeeds with checked native tools'
+    Assert-Equal $uiInstallNpmInvocations.Count 2 'ui-install verifies npm and then installs the editor dependencies'
+    Assert-ArgumentVector $uiInstallNpmInvocations[0] @('--version') 'ui-install verifies the exact checked npm executable'
+    Assert-ArgumentVector $uiInstallNpmInvocations[1] @('ci') 'ui-install routes only the checked npm executable to the exact dependency install'
+    Assert-Equal $uiInstallNpmInvocations[1].WorkingDirectory (Join-Path $repoRoot 'plugin\ui') 'ui-install runs the dependency install from plugin/ui'
+    Assert-Equal $uiInstallNpmInvocations[1].PlaywrightSkipBrowserDownload '1' 'ui-install sets PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD to the documented exact value for npm ci'
+    Assert-Equal ([Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')) 'preserved-prior-value' 'ui-install restores the prior Playwright download environment after completion'
+}
+finally {
+    [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $savedPlaywrightSkipBrowserDownload, 'Process')
+}
+
 $releasePreset = 'windows-msvc-x64-release'
 $validatorBuildTree = 'build/windows-vst3-validator'
 $validatorConfigureArguments = @(
@@ -529,10 +551,5 @@ foreach ($forbidden in @(
 )) {
     Assert-True ($source.IndexOf($forbidden, [StringComparison]::OrdinalIgnoreCase) -lt 0) "dispatcher contains no $forbidden operation"
 }
-
-$editorNpmrcPath = Join-Path $repoRoot 'plugin\ui\.npmrc'
-Assert-True (Test-Path -LiteralPath $editorNpmrcPath -PathType Leaf) 'editor npm policy is tracked before dependency lifecycle scripts run'
-$editorNpmrc = Get-Content -LiteralPath $editorNpmrcPath -Raw
-Assert-Contains $editorNpmrc 'ignore-scripts=true' 'editor npm policy suppresses Playwright browser downloads before lifecycle configuration runs'
 
 Write-Host "dev entrypoint contract passed ($script:passed assertions)."

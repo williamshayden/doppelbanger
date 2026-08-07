@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('doctor', 'format', 'test', 'configure', 'build', 'validate', 'ui-test')]
+    [ValidateSet('doctor', 'format', 'test', 'configure', 'build', 'validate', 'ui-install', 'ui-test')]
     [string]$Task,
     [ValidateSet('Release')]
     [string]$Configuration = 'Release',
@@ -285,6 +285,18 @@ try {
         'ui-test' {
             $uiRoot = Join-Path $repoRoot 'plugin\ui'
             Invoke-DbDevTool -Path $tools.npm -Arguments @('run', 'check') -WorkingDirectory $uiRoot
+            break
+        }
+        'ui-install' {
+            $uiRoot = Join-Path $repoRoot 'plugin\ui'
+            $previousPlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+            try {
+                [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1', 'Process')
+                Invoke-DbDevTool -Path $tools.npm -Arguments @('ci') -WorkingDirectory $uiRoot
+            }
+            finally {
+                [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $previousPlaywrightSkipBrowserDownload, 'Process')
+            }
             break
         }
     }
