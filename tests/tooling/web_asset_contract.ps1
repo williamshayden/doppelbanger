@@ -69,7 +69,7 @@ function Assert-WebAssetBundle {
     foreach ($file in $files) {
         $relative = Get-RelativeWebPath -Root $Root -Path $file.FullName
         $content = Get-Content -LiteralPath $file.FullName -Raw
-        if ($content -match '(?i)(?:localhost|127\.0\.0\.1|node_modules|password\s*=|api[_-]?key|vite dev|(?:fetch|importScripts)\s*\(\s*["'']https?:|new\s+(?:WebSocket|EventSource)\s*\(\s*["''](?:https?|wss?):|(?:location(?:\.href)?\s*=|window\.open\s*\()\s*["'']https?:)') {
+        if ($content -match '(?i)(?:localhost|127\.0\.0\.1|node_modules|password\s*=|api[_-]?key|vite dev|(?:fetch|importScripts)\s*\(\s*["'']https?:|new\s+(?:WebSocket|EventSource)\s*\(\s*(?:["'']|`)(?:https?|wss?):|(?:location(?:\.href)?\s*=|window\.open\s*\()\s*["'']https?:)') {
             throw "forbidden development, remote, path, or credential marker in $(Get-RelativeWebPath -Root $Root -Path $file.FullName)"
         }
         if ($relative -ceq 'index.html') {
@@ -105,6 +105,19 @@ try {
     [IO.File]::WriteAllText((Join-Path $assets 'orphan-11223344.js'), 'console.log("orphan")')
     Assert-Throws { Assert-WebAssetBundle -Root $fixtureRoot } 'an unreferenced packaged asset is rejected'
     Remove-Item -LiteralPath (Join-Path $assets 'orphan-11223344.js') -Force
+    $webSocketFixtures = @(
+        [pscustomobject]@{ Name = 'ws single literal'; Content = "new WebSocket('ws://editor.example/socket')" },
+        [pscustomobject]@{ Name = 'wss single literal'; Content = "new WebSocket('wss://editor.example/socket')" },
+        [pscustomobject]@{ Name = 'ws double literal'; Content = 'new WebSocket("ws://editor.example/socket")' },
+        [pscustomobject]@{ Name = 'wss double literal'; Content = 'new WebSocket("wss://editor.example/socket")' },
+        [pscustomobject]@{ Name = 'ws template literal'; Content = 'new WebSocket(`ws://editor.example/socket`)' },
+        [pscustomobject]@{ Name = 'wss template literal'; Content = 'new WebSocket(`wss://editor.example/socket`)' }
+    )
+    foreach ($webSocketFixture in $webSocketFixtures) {
+        [IO.File]::WriteAllText((Join-Path $assets 'index-CCl-7ZKT.js'), $webSocketFixture.Content)
+        Assert-Throws { Assert-WebAssetBundle -Root $fixtureRoot } "$($webSocketFixture.Name) is rejected"
+    }
+    [IO.File]::WriteAllText((Join-Path $assets 'index-CCl-7ZKT.js'), 'console.log("ready")')
 }
 finally {
     if (Test-Path -LiteralPath $fixtureRoot) { Remove-Item -LiteralPath $fixtureRoot -Recurse -Force }

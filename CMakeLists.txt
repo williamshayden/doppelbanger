@@ -88,8 +88,8 @@ set(DOPPELBANGER_VST3_WEB_DIR
 set(DOPPELBANGER_UI_DIR "${CMAKE_SOURCE_DIR}/plugin/ui")
 set(DOPPELBANGER_UI_DIST_DIR "${DOPPELBANGER_UI_DIR}/dist")
 set(DOPPELBANGER_UI_INDEX "${DOPPELBANGER_UI_DIST_DIR}/index.html")
-find_program(DOPPELBANGER_NODE_EXECUTABLE NAMES node.exe node REQUIRED)
-find_program(DOPPELBANGER_NPM_EXECUTABLE NAMES npm.cmd npm REQUIRED)
+find_program(DOPPELBANGER_NODE_EXECUTABLE NAMES node.exe REQUIRED)
+find_program(DOPPELBANGER_NPM_EXECUTABLE NAMES npm.cmd REQUIRED)
 file(GLOB_RECURSE DOPPELBANGER_UI_SOURCES CONFIGURE_DEPENDS
   "${DOPPELBANGER_UI_DIR}/src/*")
 set(DOPPELBANGER_UI_INPUTS
@@ -107,6 +107,20 @@ add_custom_command(
   DEPENDS ${DOPPELBANGER_UI_INPUTS}
   VERBATIM)
 add_custom_target(doppelbanger_ui_dist DEPENDS "${DOPPELBANGER_UI_INDEX}")
+set(DOPPELBANGER_VST3_WEB_STAMP
+  "${CMAKE_BINARY_DIR}/doppelbanger-vst3-web-resources.stamp")
+add_custom_command(
+  OUTPUT "${DOPPELBANGER_VST3_WEB_STAMP}"
+  COMMAND "${CMAKE_COMMAND}" -E rm -rf "${DOPPELBANGER_VST3_WEB_DIR}"
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${DOPPELBANGER_VST3_WEB_DIR}"
+  COMMAND "${CMAKE_COMMAND}" -E copy_directory
+    "${DOPPELBANGER_UI_DIST_DIR}" "${DOPPELBANGER_VST3_WEB_DIR}"
+  COMMAND "${CMAKE_COMMAND}" -E touch "${DOPPELBANGER_VST3_WEB_STAMP}"
+  DEPENDS "${DOPPELBANGER_UI_INDEX}"
+  VERBATIM)
+add_custom_target(doppelbanger_vst3_web_resources
+  DEPENDS "${DOPPELBANGER_VST3_WEB_STAMP}")
+add_dependencies(doppelbanger_vst3_web_resources doppelbanger_ui_dist)
 
 add_library(Doppelbanger-vst3 MODULE
   plugin/Doppelbanger.cpp
@@ -132,20 +146,13 @@ target_link_libraries(Doppelbanger-vst3 PRIVATE
   iPlug2::VST3
   iPlug2::WebView
   doppelbanger_rust)
-add_dependencies(Doppelbanger-vst3 doppelbanger_rust doppelbanger_ui_dist)
+add_dependencies(Doppelbanger-vst3 doppelbanger_rust doppelbanger_vst3_web_resources)
 set_target_properties(Doppelbanger-vst3 PROPERTIES
   OUTPUT_NAME "Doppelbanger"
   PREFIX ""
   SUFFIX ".vst3"
   LIBRARY_OUTPUT_DIRECTORY "${DOPPELBANGER_VST3_BINARY_DIR}"
   RUNTIME_OUTPUT_DIRECTORY "${DOPPELBANGER_VST3_BINARY_DIR}")
-add_custom_command(TARGET Doppelbanger-vst3 POST_BUILD
-  COMMAND "${CMAKE_COMMAND}" -E rm -rf "${DOPPELBANGER_VST3_WEB_DIR}"
-  COMMAND "${CMAKE_COMMAND}" -E make_directory "${DOPPELBANGER_VST3_WEB_DIR}"
-  COMMAND "${CMAKE_COMMAND}" -E copy_directory
-    "${DOPPELBANGER_UI_DIST_DIR}" "${DOPPELBANGER_VST3_WEB_DIR}"
-  VERBATIM)
-
 find_program(DOPPELBANGER_POWERSHELL_EXECUTABLE NAMES powershell.exe powershell REQUIRED)
 add_test(NAME WebViewBuildContract
   COMMAND "${DOPPELBANGER_POWERSHELL_EXECUTABLE}" -NoProfile -File
