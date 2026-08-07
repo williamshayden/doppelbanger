@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('doctor', 'format', 'test', 'configure', 'build', 'validate')]
     [string]$Task,
-    [ValidateSet('Debug', 'Release')]
+    [ValidateSet('Release')]
     [string]$Configuration = 'Release',
     [string[]]$ProcessAncestry,
     [bool]$IsWindows = ($env:OS -eq 'Windows_NT'),
@@ -35,7 +35,11 @@ function Get-DbDevProcessAncestry {
         if (-not $process) {
             throw 'DBDEV_WSL_FORBIDDEN: process ancestry cannot be inspected'
         }
-        $names.Add([string]$process.Name)
+        $processName = [string]$process.Name
+        $names.Add($processName)
+        if ([string]::Equals($processName, 'wininit.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
         $currentProcessId = [int]$process.ParentProcessId
     }
     return $names.ToArray()
@@ -90,18 +94,29 @@ function Invoke-DbDevTool {
 
     if ($CommandRunner) {
         $result = & $CommandRunner $Path $Arguments
+        $output = if ($null -ne $result -and $result.PSObject.Properties['Output']) { [string]$result.Output } else { [string]$result }
         if ($null -ne $result -and $result.PSObject.Properties['ExitCode'] -and [int]$result.ExitCode -ne 0) {
+            if (-not [string]::IsNullOrEmpty($output)) { Write-Output $output }
             throw "DBDEV_TASK_FAILED: $Path exited with code $($result.ExitCode)"
         }
-        $output = if ($null -ne $result -and $result.PSObject.Properties['Output']) { [string]$result.Output } else { [string]$result }
         return $output
     }
 
-    $output = & $Path @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "DBDEV_TASK_FAILED: $Path exited with code $LASTEXITCODE"
+    $callerErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $Path @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
     }
-    return ($output -join "`n")
+    finally {
+        $ErrorActionPreference = $callerErrorActionPreference
+    }
+    $joinedOutput = $output -join "`n"
+    if ($exitCode -ne 0) {
+        if (-not [string]::IsNullOrEmpty($joinedOutput)) { Write-Output $joinedOutput }
+        throw "DBDEV_TASK_FAILED: $Path exited with code $exitCode"
+    }
+    return $joinedOutput
 }
 
 function Assert-DbDevNativeEnvironment {
@@ -146,32 +161,64 @@ function Assert-DbDevNativeEnvironment {
 }
 
 $tools = Assert-DbDevNativeEnvironment -Ancestry $ProcessAncestry
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$releasePreset = 'windows-msvc-x64-release'
+$validatorBuildTree = 'build/windows-vst3-validator'
 
-switch ($Task) {
-    'doctor' {
-        Write-Output 'DBDEV_DOCTOR_OK: native developer prerequisites are available'
-        break
+Push-Location -LiteralPath $repoRoot
+try {
+    switch ($Task) {
+        'doctor' {
+            Write-Output 'DBDEV_DOCTOR_OK: native developer prerequisites are available'
+            break
+        }
+        'format' {
+            $cargo = Resolve-DbDevTool 'cargo'
+            Invoke-DbDevTool -Path $cargo -Arguments @('fmt', '--all', '--', '--check')
+            break
+        }
+        'test' {
+            $cargo = Resolve-DbDevTool 'cargo'
+            Invoke-DbDevTool -Path $cargo -Arguments @('test', '--locked', '--all-targets')
+            break
+        }
+        'configure' {
+            Invoke-DbDevTool -Path $tools.cmake -Arguments @('--preset', $releasePreset)
+            Invoke-DbDevTool -Path $tools.cmake -Arguments @(
+                '-S', 'third_party/vst3sdk', '-B', $validatorBuildTree, '-G', 'Ninja',
+                '-DCMAKE_BUILD_TYPE=Release',
+                '-DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON',
+                '-DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF',
+                '-DSMTG_ENABLE_VSTGUI_SUPPORT=OFF',
+                '-DSMTG_RUN_VST_VALIDATOR=OFF',
+                '-DSMTG_CREATE_PLUGIN_LINK=OFF'
+            )
+            break
+        }
+        'build' {
+            $ctest = Resolve-DbDevTool 'ctest'
+            Invoke-DbDevTool -Path $tools.cmake -Arguments @('--build', '--preset', $releasePreset)
+            Invoke-DbDevTool -Path $tools.cmake -Arguments @('--build', $validatorBuildTree, '--target', 'validator')
+            Invoke-DbDevTool -Path $ctest -Arguments @('--preset', $releasePreset)
+            break
+        }
+        'validate' {
+            $powershell = Resolve-DbDevTool 'powershell'
+            $wrapperPath = Join-Path $repoRoot 'tests\plugin\validate_vst3.ps1'
+            $validatorPath = Join-Path $repoRoot 'build\windows-vst3-validator\bin\validator.exe'
+            $pluginPath = Join-Path $repoRoot 'build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3'
+            $evidencePath = Join-Path $repoRoot 'var\validation\native-foundation'
+            Invoke-DbDevTool -Path $powershell -Arguments @(
+                '-NoProfile', '-File', $wrapperPath,
+                '-ValidatorPath', $validatorPath,
+                '-PluginPath', $pluginPath,
+                '-EvidenceDirectory', $evidencePath,
+                '-TimeoutSeconds', '120'
+            )
+            break
+        }
     }
-    'format' {
-        $cargo = Resolve-DbDevTool 'cargo'
-        Invoke-DbDevTool -Path $cargo -Arguments @('fmt', '--all', '--', '--check')
-        break
-    }
-    'test' {
-        $cargo = Resolve-DbDevTool 'cargo'
-        Invoke-DbDevTool -Path $cargo -Arguments @('test', '--locked', '--all-targets')
-        break
-    }
-    'configure' {
-        Invoke-DbDevTool -Path $tools.cmake -Arguments @('-S', '.', '-B', 'build/windows-v1', '-G', 'Ninja', "-DCMAKE_BUILD_TYPE=$Configuration")
-        break
-    }
-    'build' {
-        Invoke-DbDevTool -Path $tools.cmake -Arguments @('--build', 'build/windows-v1', '--config', $Configuration)
-        break
-    }
-    'validate' {
-        Invoke-DbDevTool -Path $tools.cmake -Arguments @('--build', 'build/windows-v1', '--target', 'validate', '--config', $Configuration)
-        break
-    }
+}
+finally {
+    Pop-Location
 }

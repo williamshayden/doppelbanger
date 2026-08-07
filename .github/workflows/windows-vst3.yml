@@ -1,0 +1,114 @@
+name: Windows VST3
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: windows-vst3-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  native-foundation:
+    name: Native x64 VST3 foundation
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Rust format
+        run: cargo fmt --all -- --check
+      - name: Rust clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Rust tests
+        shell: powershell
+        run: |
+          $evidence = 'var\validation\native-foundation'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $callerErrorActionPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = 'Continue'
+            $report = & cargo test --locked --all-targets 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+          } finally {
+            $ErrorActionPreference = $callerErrorActionPreference
+          }
+          $report | Set-Content -LiteralPath "$evidence\rust-tests.txt" -NoNewline
+          $report
+          if ($exitCode -ne 0) { exit $exitCode }
+      - name: Dependency contract
+        run: cmake -P tests/cmake/dependency_contract.cmake
+      - name: PowerShell contracts
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -File .\tests\tooling\validation_wrapper_contract.ps1
+          powershell.exe -NoProfile -File .\tests\tooling\dev_entrypoint_contract.ps1
+      - name: Configure Release VST3 and validator
+        run: |
+          cmake --preset windows-msvc-x64-release
+          cmake -S third_party/vst3sdk -B build/windows-vst3-validator -G Ninja -DCMAKE_BUILD_TYPE=Release -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF -DSMTG_RUN_VST_VALIDATOR=OFF -DSMTG_CREATE_PLUGIN_LINK=OFF
+      - name: Build Release VST3 and validator
+        run: |
+          cmake --build --preset windows-msvc-x64-release
+          cmake --build build/windows-vst3-validator --target validator
+      - name: Native CTest report
+        shell: powershell
+        run: |
+          $evidence = 'var\validation\native-foundation'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $callerErrorActionPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = 'Continue'
+            $report = & ctest --preset windows-msvc-x64-release 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+          } finally {
+            $ErrorActionPreference = $callerErrorActionPreference
+          }
+          $report | Set-Content -LiteralPath "$evidence\ctest.txt" -NoNewline
+          $report
+          if ($exitCode -ne 0) { exit $exitCode }
+      - name: Steinberg VST3 validator
+        shell: powershell
+        run: |
+          $repo = (Get-Location).Path
+          powershell.exe -NoProfile -File .\tests\plugin\validate_vst3.ps1 `
+            -ValidatorPath (Join-Path $repo 'build\windows-vst3-validator\bin\validator.exe') `
+            -PluginPath (Join-Path $repo 'build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3') `
+            -EvidenceDirectory (Join-Path $repo 'var\validation\native-foundation') `
+            -TimeoutSeconds 120
+      - name: Prepare sanitized CI evidence
+        shell: powershell
+        run: |
+          $source = 'var\validation\native-foundation'
+          $destination = Join-Path $source 'ci'
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          $workspacePattern = [regex]::Escape((Get-Location).Path)
+          Get-ChildItem -LiteralPath $source -File | ForEach-Object {
+            $content = [System.IO.File]::ReadAllText($_.FullName)
+            $content = $content -replace $workspacePattern, '<workspace>'
+            [System.IO.File]::WriteAllText((Join-Path $destination $_.Name), $content, (New-Object System.Text.UTF8Encoding($false)))
+          }
+      - name: Require clean checkout
+        shell: powershell
+        run: |
+          git diff --check
+          if (git status --porcelain) { throw 'generated output or source changes remain after the native gate' }
+      - name: Upload unsigned VST3 and reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: doppelbanger-windows-vst3
+          if-no-files-found: error
+          path: |
+            build/windows-msvc-x64-release/artefacts/Release/VST3/Doppelbanger.vst3
+            var/validation/native-foundation/ci
