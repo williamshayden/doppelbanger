@@ -5,7 +5,6 @@ param(
     [string]$Task,
     [ValidateSet('Release')]
     [string]$Configuration = 'Release',
-    [string[]]$ProcessAncestry,
     [bool]$IsWindows = ($env:OS -eq 'Windows_NT'),
     [scriptblock]$ProcessLookup,
     [scriptblock]$PlatformLookup,
@@ -20,6 +19,7 @@ function Get-DbDevProcessAncestry {
 
     $names = [System.Collections.Generic.List[string]]::new()
     $currentProcessId = $PID
+    $reachedNativeRoot = $false
     for ($i = 0; $i -lt 32 -and $currentProcessId -gt 0; $i++) {
         try {
             $process = if ($Lookup) {
@@ -38,9 +38,13 @@ function Get-DbDevProcessAncestry {
         $processName = [string]$process.Name
         $names.Add($processName)
         if ([string]::Equals($processName, 'wininit.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            $reachedNativeRoot = $true
             break
         }
         $currentProcessId = [int]$process.ParentProcessId
+    }
+    if (-not $reachedNativeRoot) {
+        throw 'DBDEV_WSL_FORBIDDEN: process ancestry cannot be inspected through wininit.exe'
     }
     return $names.ToArray()
 }
@@ -95,23 +99,51 @@ function Invoke-DbDevTool {
     if ($CommandRunner) {
         $result = & $CommandRunner $Path $Arguments
         $output = if ($null -ne $result -and $result.PSObject.Properties['Output']) { [string]$result.Output } else { [string]$result }
-        if ($null -ne $result -and $result.PSObject.Properties['ExitCode'] -and [int]$result.ExitCode -ne 0) {
+        $launchError = if ($null -ne $result -and $result.PSObject.Properties['LaunchError']) { [string]$result.LaunchError } else { '' }
+        if ($null -eq $result -or -not $result.PSObject.Properties['ExitCode'] -or $null -eq $result.ExitCode -or -not [string]::IsNullOrEmpty($launchError)) {
+            if (-not [string]::IsNullOrEmpty($output)) { Write-Output $output }
+            throw "DBDEV_TASK_FAILED: $Path could not be launched"
+        }
+        if ([int]$result.ExitCode -ne 0) {
             if (-not [string]::IsNullOrEmpty($output)) { Write-Output $output }
             throw "DBDEV_TASK_FAILED: $Path exited with code $($result.ExitCode)"
         }
         return $output
     }
 
-    $callerErrorActionPreference = $ErrorActionPreference
+    $process = [System.Diagnostics.Process]::new()
     try {
-        $ErrorActionPreference = 'Continue'
-        $output = & $Path @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $Path
+        $startInfo.Arguments = (@($Arguments | ForEach-Object {
+            $escaped = $_ -replace '(\\*)"', '$1$1\"'
+            $escaped = $escaped -replace '(\\+)$', '$1$1'
+            '"' + $escaped + '"'
+        }) -join ' ')
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) {
+            throw 'System.Diagnostics.Process.Start returned false'
+        }
+        $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
+        $standardErrorTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $standardOutputTask.Wait()
+        $standardErrorTask.Wait()
+        $exitCode = $process.ExitCode
+        $standardOutput = [string]$standardOutputTask.Result
+        $standardError = [string]$standardErrorTask.Result
+    }
+    catch {
+        throw "DBDEV_TASK_FAILED: $Path could not be launched: $($_.Exception.Message)"
     }
     finally {
-        $ErrorActionPreference = $callerErrorActionPreference
+        $process.Dispose()
     }
-    $joinedOutput = $output -join "`n"
+    $joinedOutput = @($standardOutput, $standardError) -join ''
     if ($exitCode -ne 0) {
         if (-not [string]::IsNullOrEmpty($joinedOutput)) { Write-Output $joinedOutput }
         throw "DBDEV_TASK_FAILED: $Path exited with code $exitCode"
@@ -120,8 +152,6 @@ function Invoke-DbDevTool {
 }
 
 function Assert-DbDevNativeEnvironment {
-    param([string[]]$Ancestry)
-
     if (-not $IsWindows) {
         throw 'DBDEV_WINDOWS_REQUIRED: run this dispatcher from native Windows PowerShell'
     }
@@ -143,7 +173,7 @@ function Assert-DbDevNativeEnvironment {
         throw 'DBDEV_WINDOWS_REQUIRED: run this dispatcher from supported native Windows x64'
     }
 
-    $ancestry = if ($null -ne $Ancestry) { @($Ancestry) } else { @(Get-DbDevProcessAncestry -Lookup $ProcessLookup) }
+    $ancestry = @(Get-DbDevProcessAncestry -Lookup $ProcessLookup)
     if (@($ancestry | Where-Object { $_ -match '(?i)^(wsl|wslhost|bash|zsh|sh)(?:\.exe)?$' }).Count -gt 0) {
         throw 'DBDEV_WSL_FORBIDDEN: run this dispatcher outside WSL'
     }
@@ -160,7 +190,7 @@ function Assert-DbDevNativeEnvironment {
     return $tools
 }
 
-$tools = Assert-DbDevNativeEnvironment -Ancestry $ProcessAncestry
+$tools = Assert-DbDevNativeEnvironment
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $releasePreset = 'windows-msvc-x64-release'
 $validatorBuildTree = 'build/windows-vst3-validator'

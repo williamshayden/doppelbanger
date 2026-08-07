@@ -79,6 +79,51 @@ function New-CommandRunner {
     }.GetNewClosure()
 }
 
+function New-ProcessFixture {
+    param(
+        [string[]]$Names = @('powershell.exe', 'cmd.exe', 'services.exe', 'wininit.exe'),
+        [Nullable[int]]$FinalParentProcessId
+    )
+
+    $processIds = [System.Collections.Generic.List[int]]::new()
+    $records = @{}
+    $lookups = [System.Collections.Generic.List[int]]::new()
+    for ($index = 0; $index -lt $Names.Count; $index++) {
+        $processId = if ($index -eq 0) { $PID } else { $PID + 10000 + $index }
+        $processIds.Add($processId)
+    }
+    for ($index = 0; $index -lt $Names.Count; $index++) {
+        if ($index -lt ($Names.Count - 1)) {
+            $parentProcessId = $processIds[$index + 1]
+        }
+        elseif ($PSBoundParameters.ContainsKey('FinalParentProcessId')) {
+            $parentProcessId = [int]$FinalParentProcessId
+        }
+        elseif ([string]::Equals($Names[$index], 'wininit.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            $parentProcessId = $PID + 20000 + $Names.Count
+        }
+        else {
+            $parentProcessId = 0
+        }
+        $records[$processIds[$index]] = [pscustomobject]@{
+            Name = $Names[$index]
+            ParentProcessId = $parentProcessId
+        }
+    }
+
+    $lookup = {
+        param([int]$Id)
+        $lookups.Add($Id)
+        if ($records.ContainsKey($Id)) { return $records[$Id] }
+        return $null
+    }.GetNewClosure()
+    return [pscustomobject]@{
+        Lookup = $lookup
+        ProcessIds = $processIds
+        Lookups = $lookups
+    }
+}
+
 function Assert-ArgumentVector {
     param([object]$Invocation, [string[]]$Expected, [string]$Message)
 
@@ -98,33 +143,32 @@ function Assert-ArgumentVector {
 function Invoke-DevFixture {
     param(
         [string]$Task,
-        [string[]]$ProcessAncestry = @('powershell.exe', 'explorer.exe'),
+        [string[]]$ProcessNames = @('powershell.exe', 'cmd.exe', 'services.exe', 'wininit.exe'),
         [hashtable]$Tools = (New-NativeToolFixture),
         [bool]$IsWindows = $true,
         [object]$Platform
     )
 
     $invocations = [System.Collections.Generic.List[object]]::new()
+    $processFixture = New-ProcessFixture -Names $ProcessNames
     try {
         $parameters = @{
             Task = $Task
-            ProcessAncestry = $ProcessAncestry
+            ProcessLookup = $processFixture.Lookup
             IsWindows = $IsWindows
+            PlatformLookup = (New-PlatformLookup $(if ($null -ne $Platform) { $Platform } else { New-PlatformFixture }))
             CommandResolver = (New-CommandResolver $Tools)
             CommandRunner = (New-CommandRunner $invocations)
         }
-        if ($null -ne $Platform) {
-            $parameters.PlatformLookup = New-PlatformLookup $Platform
-        }
         $null = & $devPath @parameters
-        return [pscustomobject]@{ Error = ''; Invocations = $invocations }
+        return [pscustomobject]@{ Error = ''; Invocations = $invocations; ProcessFixture = $processFixture }
     }
     catch {
-        return [pscustomobject]@{ Error = $_.Exception.Message; Invocations = $invocations }
+        return [pscustomobject]@{ Error = $_.Exception.Message; Invocations = $invocations; ProcessFixture = $processFixture }
     }
 }
 
-$wslResult = Invoke-DevFixture -Task doctor -ProcessAncestry @('powershell.exe', 'wsl.exe', 'explorer.exe')
+$wslResult = Invoke-DevFixture -Task doctor -ProcessNames @('powershell.exe', 'wsl.exe', 'wininit.exe')
 Assert-Contains $wslResult.Error 'DBDEV_WSL_FORBIDDEN' 'doctor rejects injected WSL ancestry'
 
 foreach ($clientPlatform in @(
@@ -173,6 +217,100 @@ catch {
 }
 Assert-Contains $failedLookupError 'DBDEV_WSL_FORBIDDEN' 'doctor fails closed when process ancestry lookup fails'
 Assert-True ($failedLookupInvocations.Count -eq 0) 'failed ancestry inspection does not invoke tools'
+
+$failClosedRegressions = [System.Collections.Generic.List[string]]::new()
+
+$pidZeroFixture = New-ProcessFixture -Names @('powershell.exe') -FinalParentProcessId 0
+$pidZeroInvocations = [System.Collections.Generic.List[object]]::new()
+try {
+    $null = & $devPath -Task doctor -IsWindows $true `
+        -ProcessLookup $pidZeroFixture.Lookup `
+        -PlatformLookup (New-PlatformLookup (New-PlatformFixture)) `
+        -CommandResolver (New-CommandResolver (New-NativeToolFixture)) `
+        -CommandRunner (New-CommandRunner $pidZeroInvocations)
+    $pidZeroError = ''
+}
+catch {
+    $pidZeroError = $_.Exception.Message
+}
+if ([string]::IsNullOrEmpty($pidZeroError)) {
+    $failClosedRegressions.Add('PID zero before inspected wininit.exe was accepted')
+}
+
+$depthNames = @(0..31 | ForEach-Object { "native-$_.exe" })
+$depthFixture = New-ProcessFixture -Names $depthNames -FinalParentProcessId ($PID + 30000)
+$depthInvocations = [System.Collections.Generic.List[object]]::new()
+try {
+    $null = & $devPath -Task doctor -IsWindows $true `
+        -ProcessLookup $depthFixture.Lookup `
+        -PlatformLookup (New-PlatformLookup (New-PlatformFixture)) `
+        -CommandResolver (New-CommandResolver (New-NativeToolFixture)) `
+        -CommandRunner (New-CommandRunner $depthInvocations)
+    $depthError = ''
+}
+catch {
+    $depthError = $_.Exception.Message
+}
+if ([string]::IsNullOrEmpty($depthError)) {
+    $failClosedRegressions.Add('32-record exhaustion before inspected wininit.exe was accepted')
+}
+
+$bypassInvocations = [System.Collections.Generic.List[object]]::new()
+try {
+    $null = & $devPath -Task doctor -ProcessAncestry @('powershell.exe', 'wininit.exe') -IsWindows $true `
+        -PlatformLookup (New-PlatformLookup (New-PlatformFixture)) `
+        -CommandResolver (New-CommandResolver (New-NativeToolFixture)) `
+        -CommandRunner (New-CommandRunner $bypassInvocations)
+    $bypassError = ''
+}
+catch {
+    $bypassError = $_.Exception.Message
+}
+if ([string]::IsNullOrEmpty($bypassError)) {
+    $failClosedRegressions.Add('direct ProcessAncestry list bypass was accepted')
+}
+
+$launchFixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("doppelbanger-native-launch-{0}" -f [guid]::NewGuid().ToString('N'))
+$hadLastExitCode = Test-Path -LiteralPath 'variable:global:LASTEXITCODE'
+$savedLastExitCode = $global:LASTEXITCODE
+try {
+    $null = New-Item -ItemType Directory -Path $launchFixtureRoot
+    $unstartableCargoPath = Join-Path $launchFixtureRoot 'cargo.exe'
+    [System.IO.File]::WriteAllBytes($unstartableCargoPath, [byte[]]@())
+    $nativeLaunchTools = New-NativeToolFixture
+    $nativeLaunchTools.rustc = (Get-Command -Name rustc -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $nativeLaunchTools.cargo = $unstartableCargoPath
+    $nativeLaunchFixture = New-ProcessFixture
+    $global:LASTEXITCODE = 0
+    try {
+        $null = & $devPath -Task test -IsWindows $true `
+            -ProcessLookup $nativeLaunchFixture.Lookup `
+            -PlatformLookup (New-PlatformLookup (New-PlatformFixture)) `
+            -CommandResolver (New-CommandResolver $nativeLaunchTools)
+        $nativeLaunchError = ''
+    }
+    catch {
+        $nativeLaunchError = $_.Exception.Message
+    }
+    if ([string]::IsNullOrEmpty($nativeLaunchError)) {
+        $failClosedRegressions.Add('unstartable native cargo inherited seeded LASTEXITCODE 0')
+    }
+}
+finally {
+    if ($hadLastExitCode) { $global:LASTEXITCODE = $savedLastExitCode } else { Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $launchFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+if ($failClosedRegressions.Count -gt 0) {
+    throw "ASSERTION FAILED: dispatcher fail-closed regressions:`n - $($failClosedRegressions -join "`n - ")"
+}
+Assert-Contains $pidZeroError 'DBDEV_WSL_FORBIDDEN' 'doctor fails closed when PID reaches zero before wininit.exe'
+Assert-True ($pidZeroInvocations.Count -eq 0) 'PID-zero ancestry does not invoke tools'
+Assert-Contains $depthError 'DBDEV_WSL_FORBIDDEN' 'doctor fails closed when ancestry depth is exhausted before wininit.exe'
+Assert-True ($depthInvocations.Count -eq 0) 'depth-exhausted ancestry does not invoke tools'
+Assert-Contains $bypassError 'ProcessAncestry' 'doctor exposes no direct ancestry-list bypass parameter'
+Assert-True ($bypassInvocations.Count -eq 0) 'rejected ancestry-list bypass does not invoke tools'
+Assert-Contains $nativeLaunchError 'DBDEV_TASK_FAILED' 'an unstartable native tool fails with the stable task code'
 
 $nativeRootProcessIds = @(
     $PID,
@@ -238,15 +376,11 @@ Assert-Equal (($missingIntermediateLookups | ForEach-Object { [string]$_ }) -joi
 Assert-True ($missingIntermediateInvocations.Count -eq 0) 'missing intermediate ancestry does not invoke tools'
 
 $pidBeforeProcessLookup = $PID
-$lookedUpProcessIds = [System.Collections.Generic.List[int]]::new()
+$automaticProcessFixture = New-ProcessFixture -Names @('powershell.exe', 'wininit.exe')
 $lookupInvocations = [System.Collections.Generic.List[object]]::new()
 try {
     $null = & $devPath -Task doctor -IsWindows $true `
-        -ProcessLookup {
-            param([int]$Id)
-            $lookedUpProcessIds.Add($Id)
-            [pscustomobject]@{ Name = 'powershell.exe'; ParentProcessId = 0 }
-        }.GetNewClosure() `
+        -ProcessLookup $automaticProcessFixture.Lookup `
         -PlatformLookup (New-PlatformLookup (New-PlatformFixture)) `
         -CommandResolver (New-CommandResolver (New-NativeToolFixture)) `
         -CommandRunner (New-CommandRunner $lookupInvocations)
@@ -256,7 +390,8 @@ catch {
     $processLookupError = $_.Exception.Message
 }
 Assert-True ([string]::IsNullOrEmpty($processLookupError) -and $PID -eq $pidBeforeProcessLookup) "doctor accepts an injected native process lookup without overwriting the automatic process identifier ($processLookupError)"
-Assert-True ($lookupInvocations.Count -eq 1 -and $lookedUpProcessIds.Count -eq 1 -and $lookedUpProcessIds[0] -eq $pidBeforeProcessLookup) 'doctor starts ancestry lookup from the automatic process identifier and only probes rustc host information'
+Assert-Equal (($automaticProcessFixture.Lookups | ForEach-Object { [string]$_ }) -join ',') (($automaticProcessFixture.ProcessIds | ForEach-Object { [string]$_ }) -join ',') 'doctor inspects the complete native chain from the automatic process identifier through wininit.exe'
+Assert-True ($lookupInvocations.Count -eq 1) 'complete injected native ancestry only probes rustc host information'
 
 $missingTools = New-NativeToolFixture
 $missingTools.Remove('cl')
@@ -268,8 +403,10 @@ Assert-Contains $wrongPlatformResult.Error 'DBDEV_WINDOWS_REQUIRED' 'doctor reje
 
 $wrongHostTools = New-NativeToolFixture
 $wrongHostInvocations = [System.Collections.Generic.List[object]]::new()
+$wrongHostProcessFixture = New-ProcessFixture
 try {
-    $null = & $devPath -Task doctor -ProcessAncestry @('powershell.exe') -IsWindows $true `
+    $null = & $devPath -Task doctor -ProcessLookup $wrongHostProcessFixture.Lookup -IsWindows $true `
+        -PlatformLookup (New-PlatformLookup (New-PlatformFixture)) `
         -CommandResolver (New-CommandResolver $wrongHostTools) `
         -CommandRunner {
             param([string]$Path, [string[]]$Arguments)
@@ -284,8 +421,9 @@ Assert-Contains $wrongHostError 'DBDEV_WRONG_RUST_HOST' 'doctor rejects a non-MS
 
 $nonzeroRunnerInvocations = [System.Collections.Generic.List[object]]::new()
 $nonzeroRunnerOutput = [System.Collections.Generic.List[string]]::new()
+$nonzeroProcessFixture = New-ProcessFixture
 try {
-    & $devPath -Task test -ProcessAncestry @('powershell.exe', 'wininit.exe') -IsWindows $true `
+    & $devPath -Task test -ProcessLookup $nonzeroProcessFixture.Lookup -IsWindows $true `
         -PlatformLookup (New-PlatformLookup (New-PlatformFixture)) `
         -CommandResolver (New-CommandResolver (New-NativeToolFixture)) `
         -CommandRunner {

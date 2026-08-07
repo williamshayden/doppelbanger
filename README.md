@@ -70,6 +70,42 @@ There is no public CLI. The current source binary remains a temporary developer 
 `mastered.report.json` and `mastered.plan.json`, but those files are not
 installed product interfaces or VST3 runtime requirements.
 
+For that analysis-development workflow only, start Postgres/PostgREST and the
+native worker in separate terminals:
+
+```bash
+docker compose up -d --wait
+cargo run --bin doppelbanger -- worker
+```
+
+Submit an offline render from another terminal:
+
+```bash
+cargo run --bin doppelbanger -- master \
+  --reference /absolute/path/reference.wav \
+  --target /absolute/path/premaster.wav \
+  --output /absolute/path/mastered.wav
+```
+
+Prepare AlbumDB and run the fast three-pair benchmark with:
+
+```bash
+./scripts/fetch_albumdb.sh
+cargo run --release --bin doppelbanger -- benchmark \
+  --corpus var/albumdb/pairs \
+  --output var/validation/albumdb-fast.json
+```
+
+Add `--full` for all ten AlbumDB pairs. Ordinary analysis-development checks
+remain:
+
+```bash
+cargo fmt --all -- --check
+cargo test
+cargo clippy --all-targets -- -D warnings
+docker compose config
+```
+
 The shared processor currently provides bounded low/mid/high EQ and output
 gain. A fixed-latency true-peak safety limiter, custom editor, capture queue,
 and packaged distribution are later milestones, not capabilities of this

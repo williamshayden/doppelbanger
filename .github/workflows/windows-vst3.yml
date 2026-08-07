@@ -28,9 +28,15 @@ jobs:
         with:
           arch: x64
       - name: Rust format
-        run: cargo fmt --all -- --check
+        shell: powershell
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Rust clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        shell: powershell
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Rust tests
         shell: powershell
         run: |
@@ -48,20 +54,40 @@ jobs:
           $report
           if ($exitCode -ne 0) { exit $exitCode }
       - name: Dependency contract
-        run: cmake -P tests/cmake/dependency_contract.cmake
-      - name: PowerShell contracts
+        shell: powershell
+        run: |
+          cmake -P tests/cmake/dependency_contract.cmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validation wrapper contract
         shell: powershell
         run: |
           powershell.exe -NoProfile -File .\tests\tooling\validation_wrapper_contract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Developer entrypoint contract
+        shell: powershell
+        run: |
           powershell.exe -NoProfile -File .\tests\tooling\dev_entrypoint_contract.ps1
-      - name: Configure Release VST3 and validator
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Configure Release VST3
+        shell: powershell
         run: |
           cmake --preset windows-msvc-x64-release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Configure pinned validator
+        shell: powershell
+        run: |
           cmake -S third_party/vst3sdk -B build/windows-vst3-validator -G Ninja -DCMAKE_BUILD_TYPE=Release -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF -DSMTG_RUN_VST_VALIDATOR=OFF -DSMTG_CREATE_PLUGIN_LINK=OFF
-      - name: Build Release VST3 and validator
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Release VST3
+        shell: powershell
         run: |
           cmake --build --preset windows-msvc-x64-release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build pinned validator
+        shell: powershell
+        run: |
           cmake --build build/windows-vst3-validator --target validator
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Native CTest report
         shell: powershell
         run: |
@@ -87,23 +113,69 @@ jobs:
             -PluginPath (Join-Path $repo 'build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3') `
             -EvidenceDirectory (Join-Path $repo 'var\validation\native-foundation') `
             -TimeoutSeconds 120
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare sanitized CI evidence
         shell: powershell
         run: |
-          $source = 'var\validation\native-foundation'
+          $repo = (Get-Location).Path
+          $source = Join-Path $repo 'var\validation\native-foundation'
           $destination = Join-Path $source 'ci'
+          $bundle = Join-Path $repo 'build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3'
+          $module = Join-Path $bundle 'Contents\x86_64-win\Doppelbanger.vst3'
+          $reports = @(
+            'rust-tests.txt',
+            'ctest.txt',
+            'validator.stdout.txt',
+            'validator.stderr.txt',
+            'validator.result.json'
+          )
+          if (-not (Test-Path -LiteralPath $module -PathType Leaf)) {
+            throw "missing exact VST3 module: $module"
+          }
+          $bundleFiles = @(Get-ChildItem -LiteralPath $bundle -Recurse -File)
+          if ($bundleFiles.Count -ne 1 -or $bundleFiles[0].FullName -cne $module) {
+            throw 'the unsigned VST3 bundle must contain only the exact x86_64-win module'
+          }
+          foreach ($report in $reports) {
+            $reportPath = Join-Path $source $report
+            if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
+              throw "missing required CI report: $report"
+            }
+          }
+          if (Test-Path -LiteralPath $destination) {
+            Remove-Item -LiteralPath $destination -Recurse -Force
+          }
           New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          $workspacePattern = [regex]::Escape((Get-Location).Path)
-          Get-ChildItem -LiteralPath $source -File | ForEach-Object {
-            $content = [System.IO.File]::ReadAllText($_.FullName)
-            $content = $content -replace $workspacePattern, '<workspace>'
-            [System.IO.File]::WriteAllText((Join-Path $destination $_.Name), $content, (New-Object System.Text.UTF8Encoding($false)))
+          $rawWorkspace = [System.IO.Path]::GetFullPath($repo).TrimEnd('\')
+          $escapedWorkspace = $rawWorkspace.Replace('\', '\\')
+          $encoding = New-Object System.Text.UTF8Encoding($false)
+          foreach ($report in $reports) {
+            $content = [System.IO.File]::ReadAllText((Join-Path $source $report))
+            $content = $content.Replace($escapedWorkspace, '<workspace>')
+            $content = $content.Replace($rawWorkspace, '<workspace>')
+            if ($content.Contains($rawWorkspace) -or $content.Contains($escapedWorkspace)) {
+              throw "workspace path survived sanitization in $report"
+            }
+            [System.IO.File]::WriteAllText((Join-Path $destination $report), $content, $encoding)
+          }
+          $stagedReports = @(Get-ChildItem -LiteralPath $destination -File | Select-Object -ExpandProperty Name)
+          if (@(Compare-Object -ReferenceObject $reports -DifferenceObject $stagedReports).Count -ne 0) {
+            throw 'staged CI reports differ from the explicit allowlist'
+          }
+          foreach ($report in $reports) {
+            $stagedContent = [System.IO.File]::ReadAllText((Join-Path $destination $report))
+            if ($stagedContent.Contains($rawWorkspace) -or $stagedContent.Contains($escapedWorkspace)) {
+              throw "workspace path remains in staged report $report"
+            }
           }
       - name: Require clean checkout
         shell: powershell
         run: |
           git diff --check
-          if (git status --porcelain) { throw 'generated output or source changes remain after the native gate' }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $status = @(git status --porcelain)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($status.Count -ne 0) { throw 'generated output or source changes remain after the native gate' }
       - name: Upload unsigned VST3 and reports
         uses: actions/upload-artifact@v7
         with:

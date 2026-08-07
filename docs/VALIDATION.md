@@ -66,6 +66,44 @@ The following are subsequent milestones and are not satisfied by the native foun
 
 The repository also contains analysis, plan generation, offline rendering, and benchmark work. Postgres/PostgREST and Docker belong only to that separate analysis-development context; they are never VST3 runtime dependencies and are not part of the native foundation gate. When analysis work changes, its own contracts, deterministic DSP checks, API pipeline tests, and sanitized corpus evidence remain required before making analysis or quality claims.
 
+Start the analysis services and worker in separate terminals, then submit an
+offline render from a third terminal:
+
+```bash
+docker compose up -d --wait
+cargo run --bin doppelbanger -- worker
+cargo run --bin doppelbanger -- master \
+  --reference /absolute/path/reference.wav \
+  --target /absolute/path/premaster.wav \
+  --output /absolute/path/mastered.wav
+```
+
+Prepare AlbumDB and run its fast development benchmark with:
+
+```bash
+./scripts/fetch_albumdb.sh
+cargo run --release --bin doppelbanger -- benchmark \
+  --corpus var/albumdb/pairs \
+  --output var/validation/albumdb-fast.json
+```
+
+Add `--full` for all ten pairs. Ordinary analysis-development checks are:
+
+```bash
+cargo fmt --all -- --check
+cargo test
+cargo clippy --all-targets -- -D warnings
+docker compose config
+```
+
+Changes to the API or worker also run the ignored integration gate:
+
+```bash
+docker compose up -d --wait
+cargo test --test api_integration -- --ignored --test-threads=1
+docker compose down
+```
+
 That separate lifecycle keeps `plan_only` at `queued -> analyzing -> plan_ready`. An explicit idempotent claim with the same plan hash is required before a render can advance, and reports use the canonical active-plan hash. AlbumDB is one public paired-audio corpus for those later analysis and quality gates.
 
 Generated fixtures prove deterministic mechanics, not mastering quality. Public paired audio proves repeatable algorithm behavior, and user-owned pairs remain outside Git. Objective metrics support loudness-matched listening; they do not replace it. The offline renderer and plug-in callback continue to share one processor, so separate processing baselines are prohibited.
