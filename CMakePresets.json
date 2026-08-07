@@ -28,11 +28,29 @@
   ],
   "buildPresets": [
     {
+      "name": "windows-msvc-x64-release",
+      "configurePreset": "windows-msvc-x64-release",
+      "targets": [
+        "StateCodecTests",
+        "PluginLifecycleTests",
+        "Doppelbanger-vst3"
+      ]
+    },
+    {
       "name": "windows-msvc-x64-release-rust",
       "configurePreset": "windows-msvc-x64-release",
       "targets": [
         "doppelbanger_rust"
       ]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msvc-x64-release",
+      "configurePreset": "windows-msvc-x64-release",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }
