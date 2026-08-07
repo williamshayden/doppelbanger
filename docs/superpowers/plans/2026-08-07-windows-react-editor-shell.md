@@ -8,6 +8,8 @@
 
 **Tech Stack:** Rust 1.97.1 MSVC, C++17/MSVC 14.44, CMake 4.4.2, Ninja 1.13.2, iPlug2 at `5c2df9dce3f5258acfeff3846a6a9563f382212c`, WebView2 SDK `1.0.2903.40`, WIL at `f0c6a81c0c9a4b23b6801f40554b8bec425a83b4`, Node.js `24.18.1` x64, npm `11.15.0`, React `19.2.8`, Vite `8.2.1`, TypeScript `7.0.2`, Vitest `4.1.10`, Playwright `1.62.1`, Inno Setup `6.7.1`.
 
+**Documented asset route:** Follow Steinberg's Windows VST3 bundle convention and iPlug2's WebView2 folder-mapping implementation: Vite emits relative, content-hashed files into `Contents/Resources/web`, and Release loads them through the local `https://iplug.example/` virtual origin. JUCE's embedded ZIP/BinaryData resource-provider example confirms the broader local-Release-assets convention but is not copied into iPlug2 as a second serving layer. Vite's `base: './'` is the documented embedded-deployment setting. Primary-source rationale and links are recorded in `docs/superpowers/specs/2026-08-07-windows-react-editor-shell-design.md`.
+
 ## Global Constraints
 
 - Build and test through native Windows x64 processes. WSL may orchestrate files but may not appear in the ancestry of Rust, MSVC, CMake, Ninja, Node, npm, validator, or installer-compiler processes.
@@ -18,6 +20,7 @@
 - Windows 10/11 x64 VST3 is the only target. Do not add a macOS gate or promise.
 - React, Node, npm, CMake, Rust, PowerShell, WSL, Inno Setup, and developer dependencies are absent from the installed product.
 - The editor loads only bundled resources. No remote script, font, image, analytics, WebSocket, development server, arbitrary navigation, source map, or machine-specific path may enter the Release bundle.
+- Framework, bundle, runtime, and installer architecture must follow a current primary specification or official shipped example. Record any necessary deviation and its reason before implementation.
 - WebView/JSON/UI work stays off the audio callback. Existing audio-thread safety and processor tests remain binding.
 - Do not add Postgres, PostgREST, Docker, capture, reference analysis, reports, cloud services, accounts, licensing, or telemetry in this plan.
 - Do not modify, launch, remove, scan, or configure Ableton from automated implementation tasks. Manual smoke uses the user's disposable Set and never deletes Ableton content.
@@ -237,7 +240,7 @@ Retain the downloaded package in the build tree, verify its hash on every config
 
 Keep `PluginLifecycleTests` compiled with `NO_IGRAPHICS`. Compile only `Doppelbanger-vst3` with `WEBVIEW_EDITOR_DELEGATE`, `NO_IGRAPHICS`, `IDLE_TIMER_RATE=50`, and `SAMPLE_TYPE_FLOAT`; link it to `iPlug2::WebView` and `doppelbanger_rust`.
 
-- [ ] **Step 4: Add the frontend build target.** Locate exact native `node.exe` and `npm.cmd`, run `npm ci --no-audit --no-fund` with `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, run `npm run build`, and make the VST3 depend on the resulting `dist/index.html`. Before copying, remove only the build-tree `Contents/Resources/web` directory; copy the fresh `dist` tree there. Never copy `node_modules`, source files, tests, the concept PNG, or source maps.
+- [ ] **Step 4: Add the frontend build target.** Locate exact native `node.exe` and `npm.cmd`, run `npm ci --no-audit --no-fund` with `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, run `npm run build`, and make the VST3 depend on the resulting `dist/index.html`. Before copying, remove only the build-tree `Contents/Resources/web` directory; copy the fresh `dist` tree there in conformance with Steinberg's VST3 resource layout. Never copy `node_modules`, source files, tests, the concept PNG, or source maps; do not add a ZIP/BinaryData resource server.
 
 - [ ] **Step 5: Implement the packaged-asset gate.** Require one `index.html`, one or more content-hashed `.js`/`.css` files beneath `web/assets`, relative references, the exact CSP, and no unexpected extension. Reject `.map`, source/test file names, `http:`, `https:` other than the WebView virtual origin at runtime, `localhost`, `127.0.0.1`, `ws:`, `wss:`, drive-letter paths, UNC paths, `node_modules`, credentials, and development markers. Assert every referenced asset exists and every packaged asset is referenced.
 
