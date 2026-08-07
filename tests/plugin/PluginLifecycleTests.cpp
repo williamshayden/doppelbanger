@@ -682,6 +682,58 @@ void ExactArbitraryStateSurvivesPreActivationAndProcessingHandoffs() {
          "processing-time arbitrary state remains exact instead of quantizing to the host grid");
 }
 
+void NoOpHostParameterFlushPreservesExactArbitraryState() {
+  const db_runtime_plan_v1 arbitraryPlan =
+      RuntimePlan(-3.217, {-2.221, 1.111, -0.333});
+  std::vector<char> arbitraryState = EncodeVst3State(arbitraryPlan);
+
+  HostedInstance hosted;
+  Expect(hosted.Initialize(64), "no-op parameter flush fixture activates and processes");
+  Expect(RestoreState(hosted.plugin, arbitraryState),
+         "no-op parameter flush fixture restores arbitrary state");
+  AudioBlock restoredBlock(64);
+  restoredBlock.inputLeft.assign(restoredBlock.inputLeft.size(), 0.125F);
+  restoredBlock.inputRight.assign(restoredBlock.inputRight.size(), -0.125F);
+  Expect(hosted.Process(restoredBlock) == kResultOk,
+         "arbitrary state reaches the audio processor before the no-op flush");
+
+  const std::vector<char> beforeFlush = SaveState(hosted.plugin);
+  db_runtime_plan_v1 beforeFlushPlan{};
+  Expect(beforeFlush == arbitraryState && DecodeVst3Plan(beforeFlush, beforeFlushPlan) &&
+             SamePlan(beforeFlushPlan, arbitraryPlan),
+         "arbitrary state is byte and value exact before the no-op flush");
+
+  ParameterChanges noOpFlush(1);
+  AddAutomationPoint(noOpFlush, kLowEqParam,
+                     hosted.plugin.GetParam(kLowEqParam)->GetNormalized());
+  AudioBlock noOpBlock(64);
+  noOpBlock.inputLeft.assign(noOpBlock.inputLeft.size(), 0.125F);
+  noOpBlock.inputRight.assign(noOpBlock.inputRight.size(), -0.125F);
+  Expect(hosted.Process(noOpBlock, &noOpFlush) == kResultOk,
+         "no-op host parameter flush processes");
+
+  const std::vector<char> afterNoOp = SaveState(hosted.plugin);
+  db_runtime_plan_v1 afterNoOpPlan{};
+  Expect(afterNoOp == beforeFlush && DecodeVst3Plan(afterNoOp, afterNoOpPlan) &&
+             SamePlan(afterNoOpPlan, arbitraryPlan),
+         "no-op host parameter flush preserves the exact arbitrary plan");
+
+  ParameterChanges realChange(1);
+  AddAutomationPoint(realChange, kLowEqParam, 5.0 / 6.0);
+  AudioBlock changedBlock(64);
+  changedBlock.inputLeft.assign(changedBlock.inputLeft.size(), 0.125F);
+  changedBlock.inputRight.assign(changedBlock.inputRight.size(), -0.125F);
+  Expect(hosted.Process(changedBlock, &realChange) == kResultOk,
+         "genuine host parameter change processes");
+
+  const db_runtime_plan_v1 expectedStepped =
+      RuntimePlan(-3.22, {2.0, 1.11, -0.33});
+  db_runtime_plan_v1 afterChangePlan{};
+  Expect(DecodeVst3Plan(SaveState(hosted.plugin), afterChangePlan) &&
+             SamePlan(afterChangePlan, expectedStepped),
+         "genuine host parameter change applies the complete stepped plan");
+}
+
 void StateRecreateCorruptionResetAndDestruction() {
   HostedInstance original;
   Expect(original.Initialize(512), "original component activates");
@@ -925,6 +977,7 @@ int main() {
   StateWriteFailuresAreContained();
   StateReadFailuresAreContainedAndAtomic();
   ExactArbitraryStateSurvivesPreActivationAndProcessingHandoffs();
+  NoOpHostParameterFlushPreservesExactArbitraryState();
   StateRecreateCorruptionResetAndDestruction();
   BypassAndMalformedVst3StateAreHandledAtomically();
   ConcurrentStateAndProcessingRemainSafe();

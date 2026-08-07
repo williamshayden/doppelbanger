@@ -72,7 +72,6 @@ class Doppelbanger final : public iplug::Plugin {
 
   [[nodiscard]] db_runtime_plan_v1 PlanFromParameters(
       const db_runtime_plan_v1& base) const noexcept;
-  [[nodiscard]] db_runtime_plan_v1 SteppedPlanFromParameters() const noexcept;
   [[nodiscard]] StatePacket CurrentStateForUi() const;
   [[nodiscard]] bool PrepareStatePacket(StatePacket& packet,
                                         std::uint32_t sampleRate) const noexcept;

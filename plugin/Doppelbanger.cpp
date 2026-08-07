@@ -439,16 +439,6 @@ db_runtime_plan_v1 Doppelbanger::PlanFromParameters(
   return plan;
 }
 
-db_runtime_plan_v1 Doppelbanger::SteppedPlanFromParameters() const noexcept {
-  db_runtime_plan_v1 plan = mPlan;
-  plan.bypass = 0U;
-  plan.applied_gain_db = GetParam(kOutputParam)->Value();
-  plan.eq_gains_db[0] = GetParam(kLowEqParam)->Value();
-  plan.eq_gains_db[1] = GetParam(kMidEqParam)->Value();
-  plan.eq_gains_db[2] = GetParam(kHighEqParam)->Value();
-  return plan;
-}
-
 Doppelbanger::StatePacket Doppelbanger::CurrentStateForUi() const {
   StatePacket published{};
   for (std::uint32_t attempt = 0; attempt < 64; ++attempt) {
@@ -607,11 +597,18 @@ bool Doppelbanger::ReplaceProcessor(const db_runtime_plan_v1& plan) noexcept {
 }
 
 bool Doppelbanger::ApplyParameterPlan() noexcept {
-  if (!mParametersDirty) {
-    return mProcessor != nullptr;
+  if (mProcessor == nullptr) {
+    return false;
   }
-  const db_runtime_plan_v1 plan = SteppedPlanFromParameters();
-  if (!doppelbanger::state::IsValidPlanV1(plan) || mProcessor == nullptr ||
+  if (!mParametersDirty) {
+    return true;
+  }
+  const db_runtime_plan_v1 plan = PlanFromParameters(mPlan);
+  if (PlansEqual(plan, mPlan)) {
+    mParametersDirty = false;
+    return true;
+  }
+  if (!doppelbanger::state::IsValidPlanV1(plan) ||
       db_processor_apply_stepped_plan_v1(mProcessor, &plan) != DB_STATUS_OK) {
     return false;
   }
