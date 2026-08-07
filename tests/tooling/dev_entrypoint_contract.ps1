@@ -158,7 +158,8 @@ function Invoke-DevFixture {
         [string[]]$ProcessNames = @('powershell.exe', 'cmd.exe', 'services.exe', 'wininit.exe'),
         [hashtable]$Tools = (New-NativeToolFixture),
         [bool]$IsWindows = $true,
-        [object]$Platform
+        [object]$Platform,
+        [scriptblock]$CommandRunner
     )
 
     $invocations = [System.Collections.Generic.List[object]]::new()
@@ -170,7 +171,7 @@ function Invoke-DevFixture {
             IsWindows = $IsWindows
             PlatformLookup = (New-PlatformLookup $(if ($null -ne $Platform) { $Platform } else { New-PlatformFixture }))
             CommandResolver = (New-CommandResolver $Tools)
-            CommandRunner = (New-CommandRunner $invocations)
+            CommandRunner = $(if ($CommandRunner) { $CommandRunner } else { New-CommandRunner $invocations })
         }
         $null = & $devPath @parameters
         return [pscustomobject]@{ Error = ''; Invocations = $invocations; ProcessFixture = $processFixture }
@@ -497,6 +498,45 @@ try {
 }
 finally {
     [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $savedPlaywrightSkipBrowserDownload, 'Process')
+}
+
+$savedCleanupPlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+try {
+    [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $null, 'Process')
+    $absentUiInstallResult = Invoke-DevFixture -Task ui-install
+    $absentUiInstallNpmInvocations = @($absentUiInstallResult.Invocations | Where-Object { $_.Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) })
+    Assert-True ([string]::IsNullOrEmpty($absentUiInstallResult.Error)) 'ui-install succeeds when the Playwright download environment is initially absent'
+    Assert-Equal $absentUiInstallNpmInvocations[1].PlaywrightSkipBrowserDownload '1' 'ui-install exposes the documented value during npm ci when no prior value exists'
+    Assert-True ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process'))) 'ui-install restores an initially absent Playwright download environment after success'
+
+    $failingUiInstallInvocations = [System.Collections.Generic.List[object]]::new()
+    [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'preserved-after-failure', 'Process')
+    $failingUiInstallResult = Invoke-DevFixture -Task ui-install -CommandRunner {
+        param([string]$Path, [string[]]$Arguments, [string]$WorkingDirectory)
+        $failingUiInstallInvocations.Add([pscustomobject]@{
+            Path = $Path
+            Arguments = @($Arguments)
+            WorkingDirectory = $WorkingDirectory
+            PlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+        })
+        if ($Path.EndsWith('rustc.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Output = "rustc 1.97.1" + [Environment]::NewLine + "host: x86_64-pc-windows-msvc"; ExitCode = 0 }
+        }
+        if ($Path.EndsWith('node.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Output = 'v24.18.1'; ExitCode = 0 }
+        }
+        if ($Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) -and $Arguments.Count -eq 1 -and $Arguments[0] -ceq 'ci') {
+            return [pscustomobject]@{ Output = 'simulated npm ci failure'; ExitCode = 31 }
+        }
+        return [pscustomobject]@{ Output = '11.16.0'; ExitCode = 0 }
+    }.GetNewClosure()
+    $failingUiInstallNpmInvocations = @($failingUiInstallInvocations | Where-Object { $_.Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) })
+    Assert-Contains $failingUiInstallResult.Error 'DBDEV_TASK_FAILED' 'ui-install propagates a checked npm ci failure'
+    Assert-Equal $failingUiInstallNpmInvocations[1].PlaywrightSkipBrowserDownload '1' 'ui-install exposes the documented value during a failing npm ci'
+    Assert-Equal ([Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')) 'preserved-after-failure' 'ui-install restores the prior Playwright download environment after npm ci failure'
+}
+finally {
+    [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $savedCleanupPlaywrightSkipBrowserDownload, 'Process')
 }
 
 $releasePreset = 'windows-msvc-x64-release'
