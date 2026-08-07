@@ -31,6 +31,7 @@ using Steinberg::Vst::ParameterChanges;
 using Steinberg::Vst::ProcessData;
 using Steinberg::Vst::ProcessSetup;
 using Steinberg::Vst::Sample32;
+using Steinberg::Vst::Sample64;
 using Steinberg::Vst::SpeakerArrangement;
 using Steinberg::Vst::SpeakerArr::kMono;
 using Steinberg::Vst::SpeakerArr::kStereo;
@@ -48,6 +49,10 @@ void Expect(bool condition, const char* message) {
 }
 
 bool Near(float actual, float expected, float tolerance = 1.0e-6F) {
+  return std::abs(actual - expected) <= tolerance;
+}
+
+bool NearDouble(double actual, double expected, double tolerance = 1.0e-12) {
   return std::abs(actual - expected) <= tolerance;
 }
 
@@ -78,6 +83,50 @@ struct AudioBlock {
   std::vector<Sample32> outputRight;
   std::array<Sample32*, 2> inputChannels{};
   std::array<Sample32*, 2> outputChannels{};
+  AudioBusBuffers input{};
+  AudioBusBuffers output{};
+};
+
+struct AudioBlock64 {
+  explicit AudioBlock64(int frames)
+      : inputLeft(static_cast<std::size_t>(frames) + 2U, 0.0),
+        inputRight(static_cast<std::size_t>(frames) + 2U, 0.0),
+        outputLeft(static_cast<std::size_t>(frames) + 2U, 99.0),
+        outputRight(static_cast<std::size_t>(frames) + 2U, 99.0) {
+    inputLeft.front() = inputRight.front() = kFrontGuard;
+    inputLeft.back() = inputRight.back() = kBackGuard;
+    outputLeft.front() = outputRight.front() = kFrontGuard;
+    outputLeft.back() = outputRight.back() = kBackGuard;
+    inputChannels = {inputLeft.data() + 1, inputRight.data() + 1};
+    outputChannels = {outputLeft.data() + 1, outputRight.data() + 1};
+    input.numChannels = 2;
+    input.silenceFlags = 0;
+    input.channelBuffers64 = inputChannels.data();
+    output.numChannels = 2;
+    output.silenceFlags = 0;
+    output.channelBuffers64 = outputChannels.data();
+  }
+
+  [[nodiscard]] bool OutputIsSilent(int frames) const {
+    return std::all_of(outputLeft.begin() + 1, outputLeft.begin() + 1 + frames,
+                       [](Sample64 sample) { return sample == 0.0; }) &&
+           std::all_of(outputRight.begin() + 1, outputRight.begin() + 1 + frames,
+                       [](Sample64 sample) { return sample == 0.0; });
+  }
+
+  [[nodiscard]] bool GuardsAreIntact() const {
+    return outputLeft.front() == kFrontGuard && outputRight.front() == kFrontGuard &&
+           outputLeft.back() == kBackGuard && outputRight.back() == kBackGuard;
+  }
+
+  static constexpr Sample64 kFrontGuard = 12'345.0;
+  static constexpr Sample64 kBackGuard = -54'321.0;
+  std::vector<Sample64> inputLeft;
+  std::vector<Sample64> inputRight;
+  std::vector<Sample64> outputLeft;
+  std::vector<Sample64> outputRight;
+  std::array<Sample64*, 2> inputChannels{};
+  std::array<Sample64*, 2> outputChannels{};
   AudioBusBuffers input{};
   AudioBusBuffers output{};
 };
@@ -113,11 +162,81 @@ class ControlledWriteStream final : public MemoryStream {
   Behavior behavior;
 };
 
+class ControlledReadStream final : public MemoryStream {
+ public:
+  enum class Behavior {
+    kFailureWithFullFinalChunk,
+    kFailureAfterPartialChunk,
+    kCountLargerThanRequested,
+    kTrailingProbeFailure,
+    kTrailingProbeOverReport,
+    kValidShortReads,
+  };
+
+  ControlledReadStream(std::vector<char>& bytes, Behavior behavior)
+      : MemoryStream(bytes.data(), static_cast<Steinberg::TSize>(bytes.size())),
+        behavior(behavior) {}
+
+  Steinberg::tresult PLUGIN_API read(void* buffer,
+                                     Steinberg::int32 numBytes,
+                                     Steinberg::int32* numBytesRead) override {
+    if (numBytesRead == nullptr || numBytes < 0) {
+      return kResultFalse;
+    }
+
+    if (behavior == Behavior::kFailureAfterPartialChunk) {
+      if (readCalls++ == 0) {
+        return MemoryStream::read(buffer, std::min<Steinberg::int32>(13, numBytes),
+                                  numBytesRead);
+      }
+      *numBytesRead = 0;
+      return kResultFalse;
+    }
+
+    if (cursor >= size) {
+      if (behavior == Behavior::kTrailingProbeFailure) {
+        *numBytesRead = 0;
+        return kResultFalse;
+      }
+      if (behavior == Behavior::kTrailingProbeOverReport) {
+        *numBytesRead = numBytes + 1;
+        return kResultTrue;
+      }
+      *numBytesRead = 0;
+      return kResultTrue;
+    }
+
+    if (behavior == Behavior::kFailureWithFullFinalChunk) {
+      static_cast<void>(MemoryStream::read(buffer, numBytes, numBytesRead));
+      return kResultFalse;
+    }
+    if (behavior == Behavior::kCountLargerThanRequested) {
+      static_cast<void>(MemoryStream::read(buffer, numBytes, numBytesRead));
+      *numBytesRead = numBytes + 1;
+      return kResultTrue;
+    }
+    if (behavior == Behavior::kValidShortReads) {
+      return MemoryStream::read(buffer, std::min<Steinberg::int32>(7, numBytes),
+                                numBytesRead);
+    }
+    return MemoryStream::read(buffer, numBytes, numBytesRead);
+  }
+
+ private:
+  Behavior behavior;
+  int readCalls = 0;
+};
+
 class HostedInstance {
  public:
   HostedInstance() : plugin(iplug::InstanceInfo{}) {}
 
   ~HostedInstance() {
+    if (processing) {
+      Expect(plugin.setProcessing(false) == kResultOk,
+             "fixture stops VST3 processing before deactivation");
+      processing = false;
+    }
     if (active) {
       plugin.setActive(false);
     }
@@ -126,8 +245,15 @@ class HostedInstance {
     }
   }
 
-  bool Initialize(int maxBlockFrames = 512) {
+  bool InitializeComponent() {
+    if (initialized) {
+      return true;
+    }
     initialized = plugin.initialize(nullptr) == kResultOk;
+    return initialized;
+  }
+
+  bool ConfigureAndActivate(int maxBlockFrames = 512) {
     if (!initialized) {
       return false;
     }
@@ -143,7 +269,15 @@ class HostedInstance {
     plugin.activateBus(MediaTypes::kAudio, BusDirections::kInput, 0, true);
     plugin.activateBus(MediaTypes::kAudio, BusDirections::kOutput, 0, true);
     active = plugin.setActive(true) == kResultOk;
-    return active;
+    if (!active) {
+      return false;
+    }
+    processing = plugin.setProcessing(true) == kResultOk;
+    return processing;
+  }
+
+  bool Initialize(int maxBlockFrames = 512) {
+    return InitializeComponent() && ConfigureAndActivate(maxBlockFrames);
   }
 
   Steinberg::tresult Process(AudioBlock& block,
@@ -174,14 +308,30 @@ class HostedInstance {
     return plugin.process(data);
   }
 
+  Steinberg::tresult Process64(AudioBlock64& block, int frames) {
+    ProcessData data{};
+    data.processMode = kRealtime;
+    data.symbolicSampleSize = kSample64;
+    data.numSamples = frames;
+    data.numInputs = 1;
+    data.numOutputs = 1;
+    data.inputs = &block.input;
+    data.outputs = &block.output;
+    return plugin.process(data);
+  }
+
   void Reset() {
+    Expect(processing, "processing is active before reset");
     Expect(plugin.setProcessing(false) == kResultOk, "processing can stop for reset");
-    Expect(plugin.setProcessing(true) == kResultOk, "processing can restart after reset");
+    processing = false;
+    processing = plugin.setProcessing(true) == kResultOk;
+    Expect(processing, "processing can restart after reset");
   }
 
   Doppelbanger plugin;
   bool initialized = false;
   bool active = false;
+  bool processing = false;
 };
 
 void AddAutomationPoint(ParameterChanges& changes,
@@ -216,6 +366,12 @@ void ComponentIdentityAndFormatContract() {
          "High EQ has its stable label");
   Expect(std::string_view(hosted.plugin.GetParam(kOutputParam)->GetName()) == "Output",
          "Output has its stable label");
+  for (int parameter = kLowEqParam; parameter <= kOutputParam; ++parameter) {
+    Expect(hosted.plugin.GetParam(parameter)->GetStepped(),
+           "every product parameter constrains host values to its advertised step");
+    Expect(hosted.plugin.GetParam(parameter)->GetStep() == 0.01,
+           "every product parameter retains the 0.01 dB step");
+  }
 
   Expect(hosted.plugin.getBusCount(MediaTypes::kAudio, BusDirections::kInput) == 1,
          "component exposes one audio input bus");
@@ -247,6 +403,30 @@ void ComponentIdentityAndFormatContract() {
   Expect(hosted.plugin.setupProcessing(oversized) == kResultFalse,
          "oversized processing setup is rejected");
   Expect(hosted.plugin.createView("editor") == nullptr, "headless component has no editor");
+}
+
+void HostAutomationIsCentidecibelStepped() {
+  HostedInstance hosted;
+  Expect(hosted.Initialize(64), "stepped-automation component activates and processes");
+
+  ParameterChanges automation(4);
+  AddAutomationPoint(automation, kLowEqParam, (0.1234 + 3.0) / 6.0);
+  AddAutomationPoint(automation, kMidEqParam, (-1.234 + 3.0) / 6.0);
+  AddAutomationPoint(automation, kHighEqParam, (2.999 + 3.0) / 6.0);
+  AddAutomationPoint(automation, kOutputParam, (6.789 + 12.0) / 24.0);
+  AudioBlock block(64);
+  block.inputLeft.assign(block.inputLeft.size(), 0.125F);
+  block.inputRight.assign(block.inputRight.size(), -0.125F);
+  Expect(hosted.Process(block, &automation) == kResultOk,
+         "arbitrary normalized host automation processes");
+  Expect(NearDouble(hosted.plugin.GetParam(kLowEqParam)->Value(), 0.12),
+         "Low EQ automation is quantized before OnParamChange");
+  Expect(NearDouble(hosted.plugin.GetParam(kMidEqParam)->Value(), -1.23),
+         "Mid EQ automation is quantized before OnParamChange");
+  Expect(NearDouble(hosted.plugin.GetParam(kHighEqParam)->Value(), 3.0),
+         "High EQ automation is quantized before OnParamChange");
+  Expect(NearDouble(hosted.plugin.GetParam(kOutputParam)->Value(), 6.79),
+         "Output automation is quantized before OnParamChange");
 }
 
 void SilenceImpulseAutomationAndBypass() {
@@ -331,6 +511,46 @@ bool RestoreState(Doppelbanger& plugin, std::vector<char>& bytes) {
   return plugin.setState(&stream) == kResultOk;
 }
 
+db_runtime_plan_v1 RuntimePlan(double output = 0.0,
+                               std::array<double, 3> eq = {0.0, 0.0, 0.0}) {
+  return db_runtime_plan_v1{
+      sizeof(db_runtime_plan_v1), DB_ABI_VERSION, DB_PLAN_SCHEMA_VERSION,
+      DB_PROCESSOR_VERSION,       0U,             0U,
+      output,                     {eq[0], eq[1], eq[2]},
+  };
+}
+
+std::vector<char> EncodeVst3State(const db_runtime_plan_v1& plan,
+                                  std::int32_t hostBypass = 0) {
+  doppelbanger::state::EncodedStateV1 encoded{};
+  Expect(doppelbanger::state::EncodeStateV1(plan, encoded) ==
+             doppelbanger::state::StateCodecStatus::kOk,
+         "test fixture plan encodes");
+  std::vector<char> bytes(encoded.begin(), encoded.end());
+  const auto* bypassBytes = reinterpret_cast<const char*>(&hostBypass);
+  bytes.insert(bytes.end(), bypassBytes, bypassBytes + sizeof(hostBypass));
+  return bytes;
+}
+
+bool DecodeVst3Plan(const std::vector<char>& bytes, db_runtime_plan_v1& plan) {
+  return bytes.size() ==
+             doppelbanger::state::kEncodedStateV1Size + sizeof(std::int32_t) &&
+         doppelbanger::state::DecodeStateV1(
+             reinterpret_cast<const std::uint8_t*>(bytes.data()),
+             doppelbanger::state::kEncodedStateV1Size, plan) ==
+             doppelbanger::state::StateCodecStatus::kOk;
+}
+
+bool SamePlan(const db_runtime_plan_v1& left, const db_runtime_plan_v1& right) {
+  return left.struct_size == right.struct_size && left.abi_version == right.abi_version &&
+         left.plan_schema_version == right.plan_schema_version &&
+         left.processor_version == right.processor_version && left.bypass == right.bypass &&
+         left.reserved == right.reserved && left.applied_gain_db == right.applied_gain_db &&
+         left.eq_gains_db[0] == right.eq_gains_db[0] &&
+         left.eq_gains_db[1] == right.eq_gains_db[1] &&
+         left.eq_gains_db[2] == right.eq_gains_db[2];
+}
+
 bool HasValidFixedState(const std::vector<char>& bytes) {
   constexpr std::size_t kVst3StateSize =
       doppelbanger::state::kEncodedStateV1Size + sizeof(std::int32_t);
@@ -381,6 +601,85 @@ void StateWriteFailuresAreContained() {
   }
   Expect(!escaped, "state stream exceptions cannot cross the host boundary");
   Expect(result == kResultFalse, "state stream exceptions report failure");
+}
+
+void StateReadFailuresAreContainedAndAtomic() {
+  const db_runtime_plan_v1 requestedPlan = RuntimePlan(6.0, {2.0, -1.5, 0.75});
+  std::vector<char> requestedState = EncodeVst3State(requestedPlan);
+
+  for (const auto behavior : {
+           ControlledReadStream::Behavior::kFailureWithFullFinalChunk,
+           ControlledReadStream::Behavior::kFailureAfterPartialChunk,
+           ControlledReadStream::Behavior::kCountLargerThanRequested,
+           ControlledReadStream::Behavior::kTrailingProbeFailure,
+           ControlledReadStream::Behavior::kTrailingProbeOverReport,
+       }) {
+    HostedInstance hosted;
+    Expect(hosted.Initialize(64), "state-read rejection fixture activates and processes");
+    const std::array<double, 4> before{
+        hosted.plugin.GetParam(kLowEqParam)->Value(),
+        hosted.plugin.GetParam(kMidEqParam)->Value(),
+        hosted.plugin.GetParam(kHighEqParam)->Value(),
+        hosted.plugin.GetParam(kOutputParam)->Value(),
+    };
+    ControlledReadStream stream(requestedState, behavior);
+    Expect(hosted.plugin.setState(&stream) == kResultFalse,
+           "failed or over-reported state reads are rejected");
+    Expect(hosted.plugin.GetParam(kLowEqParam)->Value() == before[0] &&
+               hosted.plugin.GetParam(kMidEqParam)->Value() == before[1] &&
+               hosted.plugin.GetParam(kHighEqParam)->Value() == before[2] &&
+               hosted.plugin.GetParam(kOutputParam)->Value() == before[3],
+           "failed or over-reported state reads cannot mutate parameters");
+  }
+
+  HostedInstance valid;
+  Expect(valid.Initialize(64), "short-read success fixture activates and processes");
+  ControlledReadStream shortReads(requestedState,
+                                  ControlledReadStream::Behavior::kValidShortReads);
+  Expect(valid.plugin.setState(&shortReads) == kResultOk,
+         "successful short reads totaling exactly 76 bytes restore state");
+  Expect(valid.plugin.GetParam(kLowEqParam)->Value() == 2.0 &&
+             valid.plugin.GetParam(kMidEqParam)->Value() == -1.5 &&
+             valid.plugin.GetParam(kHighEqParam)->Value() == 0.75 &&
+             valid.plugin.GetParam(kOutputParam)->Value() == 6.0,
+         "successful short reads restore every parameter");
+}
+
+void ExactArbitraryStateSurvivesPreActivationAndProcessingHandoffs() {
+  const db_runtime_plan_v1 beforeActivation =
+      RuntimePlan(1.234, {0.123, -2.345, 2.999});
+  std::vector<char> beforeActivationBytes = EncodeVst3State(beforeActivation);
+
+  HostedInstance hosted;
+  Expect(hosted.InitializeComponent(), "pre-activation restore component initializes");
+  Expect(RestoreState(hosted.plugin, beforeActivationBytes),
+         "state restore succeeds before sample-rate configuration and activation");
+  Expect(hosted.ConfigureAndActivate(512),
+         "pre-activation restored component configures, activates, and enters processing");
+  AudioBlock firstBlock(512);
+  firstBlock.inputLeft.assign(firstBlock.inputLeft.size(), 0.125F);
+  firstBlock.inputRight.assign(firstBlock.inputRight.size(), -0.125F);
+  Expect(hosted.Process(firstBlock) == kResultOk,
+         "pre-activation arbitrary state applies at the first block boundary");
+  db_runtime_plan_v1 firstSaved{};
+  Expect(DecodeVst3Plan(SaveState(hosted.plugin), firstSaved) &&
+             SamePlan(firstSaved, beforeActivation),
+         "pre-activation arbitrary state remains exact after processing");
+
+  const db_runtime_plan_v1 whileProcessing =
+      RuntimePlan(-3.217, {-2.221, 1.111, -0.333});
+  std::vector<char> whileProcessingBytes = EncodeVst3State(whileProcessing);
+  Expect(RestoreState(hosted.plugin, whileProcessingBytes),
+         "arbitrary state restore succeeds while VST3 processing is active");
+  AudioBlock secondBlock(512);
+  secondBlock.inputLeft.assign(secondBlock.inputLeft.size(), 0.125F);
+  secondBlock.inputRight.assign(secondBlock.inputRight.size(), -0.125F);
+  Expect(hosted.Process(secondBlock) == kResultOk,
+         "arbitrary processing-state handoff applies at a block boundary");
+  db_runtime_plan_v1 secondSaved{};
+  Expect(DecodeVst3Plan(SaveState(hosted.plugin), secondSaved) &&
+             SamePlan(secondSaved, whileProcessing),
+         "processing-time arbitrary state remains exact instead of quantizing to the host grid");
 }
 
 void StateRecreateCorruptionResetAndDestruction() {
@@ -447,6 +746,16 @@ void StateRecreateCorruptionResetAndDestruction() {
          "rejected bounded process output is silenced");
   Expect(tooLarge.output.silenceFlags == 0x3ULL,
          "rejected stereo output reports both channels silent");
+
+  AudioBlock64 tooLarge64(65);
+  Expect(bounded.Process64(tooLarge64, 65) == kResultFalse,
+         "oversized 64-bit process block is rejected");
+  Expect(tooLarge64.OutputIsSilent(65),
+         "rejected bounded 64-bit process output is silenced");
+  Expect(tooLarge64.output.silenceFlags == 0x3ULL,
+         "rejected 64-bit stereo output reports both channels silent");
+  Expect(tooLarge64.GuardsAreIntact(),
+         "rejected 64-bit output clearing stays inside valid buffers");
 
   {
     HostedInstance noEditor;
@@ -611,8 +920,11 @@ void ConcurrentStateAndProcessingRemainSafe() {
 
 int main() {
   ComponentIdentityAndFormatContract();
+  HostAutomationIsCentidecibelStepped();
   SilenceImpulseAutomationAndBypass();
   StateWriteFailuresAreContained();
+  StateReadFailuresAreContainedAndAtomic();
+  ExactArbitraryStateSurvivesPreActivationAndProcessingHandoffs();
   StateRecreateCorruptionResetAndDestruction();
   BypassAndMalformedVst3StateAreHandledAtomically();
   ConcurrentStateAndProcessingRemainSafe();

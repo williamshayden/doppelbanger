@@ -12,6 +12,18 @@ _Static_assert(offsetof(db_meter_snapshot_v1, input_peak) == 16,
                "db_meter_snapshot_v1.input_peak offset changed");
 _Static_assert(offsetof(db_meter_snapshot_v1, output_peak) == 24,
                "db_meter_snapshot_v1.output_peak offset changed");
+_Static_assert(sizeof(db_prepared_runtime_targets_v1) == 88,
+               "db_prepared_runtime_targets_v1 size changed");
+_Static_assert(_Alignof(db_prepared_runtime_targets_v1) == 4,
+               "db_prepared_runtime_targets_v1 alignment changed");
+_Static_assert(offsetof(db_prepared_runtime_targets_v1, filter_coefficients) == 16,
+               "db_prepared_runtime_targets_v1 coefficients offset changed");
+_Static_assert(offsetof(db_prepared_runtime_targets_v1, gain) == 76,
+               "db_prepared_runtime_targets_v1 gain offset changed");
+_Static_assert(offsetof(db_prepared_runtime_targets_v1, wet) == 80,
+               "db_prepared_runtime_targets_v1 wet offset changed");
+_Static_assert(offsetof(db_prepared_runtime_targets_v1, reserved) == 84,
+               "db_prepared_runtime_targets_v1 reserved offset changed");
 
 static int db_run_c11_update_smoke(void) {
   db_runtime_plan_v1 plan = {
@@ -19,6 +31,7 @@ static int db_run_c11_update_smoke(void) {
       DB_PLAN_SCHEMA_VERSION, DB_PROCESSOR_VERSION, 0u, 0u, 0.0,
       {0.0, 0.0, 0.0}};
   db_meter_snapshot_v1 meter;
+  db_prepared_runtime_targets_v1 prepared;
   db_processor *processor = NULL;
   float left[DB_SMOKE_FRAMES];
   float right[DB_SMOKE_FRAMES];
@@ -47,9 +60,39 @@ static int db_run_c11_update_smoke(void) {
   plan.eq_gains_db[0] = 1.0;
   plan.eq_gains_db[1] = -1.0;
   plan.eq_gains_db[2] = 0.5;
+  memset(&prepared, 0xA5, sizeof(prepared));
+  status = db_prepare_runtime_plan_v1(&plan, 48000.0, &prepared);
+  if (db_smoke_expect_status("C11", "prepare exact update", status,
+                             DB_STATUS_OK) != 0 ||
+      prepared.struct_size != sizeof(prepared) ||
+      prepared.sample_rate_hz != 48000u) {
+    (void)db_processor_destroy(processor);
+    return 1;
+  }
+  status = db_processor_apply_prepared_v1(processor, &prepared);
+  if (db_smoke_expect_status("C11", "apply prepared update", status,
+                             DB_STATUS_OK) != 0) {
+    (void)db_processor_destroy(processor);
+    return 1;
+  }
   status = db_processor_set_plan_v1(processor, &plan);
   if (db_smoke_expect_status("C11", "valid update", status, DB_STATUS_OK) !=
       0) {
+    (void)db_processor_destroy(processor);
+    return 1;
+  }
+
+  plan.applied_gain_db = 2.001;
+  status = db_processor_apply_stepped_plan_v1(processor, &plan);
+  if (db_smoke_expect_status("C11", "reject non-grid update", status,
+                             DB_STATUS_INVALID_CONFIGURATION) != 0) {
+    (void)db_processor_destroy(processor);
+    return 1;
+  }
+  plan.applied_gain_db = 2.0;
+  status = db_processor_apply_stepped_plan_v1(processor, &plan);
+  if (db_smoke_expect_status("C11", "apply stepped update", status,
+                             DB_STATUS_OK) != 0) {
     (void)db_processor_destroy(processor);
     return 1;
   }

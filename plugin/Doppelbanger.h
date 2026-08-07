@@ -40,6 +40,9 @@ class Doppelbanger final : public iplug::Plugin {
  private:
   struct StatePacket {
     db_runtime_plan_v1 plan{};
+    db_prepared_runtime_targets_v1 prepared{};
+    std::uint32_t preparedSampleRate = 0;
+    std::uint32_t preparedValid = 0;
     std::int32_t hostBypass = 0;
     std::uint64_t generation = 0;
   };
@@ -69,7 +72,11 @@ class Doppelbanger final : public iplug::Plugin {
 
   [[nodiscard]] db_runtime_plan_v1 PlanFromParameters(
       const db_runtime_plan_v1& base) const noexcept;
+  [[nodiscard]] db_runtime_plan_v1 SteppedPlanFromParameters() const noexcept;
   [[nodiscard]] StatePacket CurrentStateForUi() const;
+  [[nodiscard]] bool PrepareStatePacket(StatePacket& packet,
+                                        std::uint32_t sampleRate) const noexcept;
+  [[nodiscard]] bool PublishPendingState(const StatePacket& packet) noexcept;
   [[nodiscard]] bool QueueStateFromUi(const db_runtime_plan_v1& plan,
                                       std::int32_t hostBypass) noexcept;
   [[nodiscard]] bool ApplyPendingState() noexcept;
@@ -82,6 +89,9 @@ class Doppelbanger final : public iplug::Plugin {
 
   db_processor* mProcessor = nullptr;
   db_runtime_plan_v1 mPlan{};
+  db_prepared_runtime_targets_v1 mPreparedTargets{};
+  std::uint32_t mPreparedSampleRate = 0;
+  std::uint32_t mPreparedValid = 0;
   std::uint32_t mProcessorSampleRate = 0;
   std::uint32_t mProcessorMaxBlockFrames = 0;
   bool mParametersDirty = false;
@@ -92,6 +102,7 @@ class Doppelbanger final : public iplug::Plugin {
   StateMailbox mPendingState;
   mutable StateMailbox mPublishedState;
   mutable StatePacket mUiStateCache{};
+  std::atomic<std::uint32_t> mConfiguredSampleRate{0};
   std::uint64_t mNextStateGeneration = 1;
   std::uint64_t mAudioStateGeneration = 0;
 };

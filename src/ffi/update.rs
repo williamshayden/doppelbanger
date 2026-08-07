@@ -1,10 +1,30 @@
 use std::mem::size_of;
 use std::ptr;
 
+use crate::dsp::ProcessorTargets;
+
 use super::{
     DB_ABI_VERSION, DB_PROCESSOR_VERSION, DbProcessor, DbRuntimePlanV1, DbStatus, ffi_guard,
-    runtime_plan_version_is_compatible,
+    runtime_plan_version_is_compatible, supported_sample_rate,
 };
+
+const MAX_ABS_FILTER_COEFFICIENT: f32 = 8.0;
+const MIN_PREPARED_GAIN: f32 = 0.25;
+const MAX_PREPARED_GAIN: f32 = 4.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
+pub struct DbPreparedRuntimeTargetsV1 {
+    pub struct_size: u32,
+    pub abi_version: u32,
+    pub processor_version: u32,
+    pub sample_rate_hz: u32,
+    /// Coefficient order for each filter is `[a1, a2, b0, b1, b2]`.
+    pub filter_coefficients: [[f32; 5]; 3],
+    pub gain: f32,
+    pub wet: f32,
+    pub reserved: u32,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
@@ -18,7 +38,133 @@ pub struct DbMeterSnapshotV1 {
 }
 
 #[unsafe(no_mangle)]
-/// Replaces the processor's numeric targets after validating the complete V1 plan.
+/// Designs one complete fixed-layout target without accessing a processor handle.
+///
+/// This function performs coefficient design and is not realtime safe. `output` is written only
+/// after the complete plan and sample rate have been validated and all targets are prepared.
+///
+/// # Safety
+///
+/// `plan` must point to a readable `struct_size`. When that value matches `DbRuntimePlanV1`, the
+/// full structure must be readable. `output` must point to writable target storage.
+pub unsafe extern "C" fn db_prepare_runtime_plan_v1(
+    plan: *const DbRuntimePlanV1,
+    sample_rate_hz: f64,
+    output: *mut DbPreparedRuntimeTargetsV1,
+) -> DbStatus {
+    ffi_guard(|| {
+        if output.is_null() {
+            return DbStatus::NullPointer;
+        }
+        let plan = match unsafe { read_runtime_plan(plan) } {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+        if !runtime_plan_values_are_valid(&plan) {
+            return DbStatus::InvalidConfiguration;
+        }
+        let Some(sample_rate_hz) = supported_sample_rate(sample_rate_hz) else {
+            return DbStatus::InvalidConfiguration;
+        };
+        let Ok(targets) = ProcessorTargets::new(
+            plan.bypass == 1,
+            plan.applied_gain_db,
+            plan.eq_gains_db,
+            sample_rate_hz,
+        ) else {
+            return DbStatus::InvalidConfiguration;
+        };
+        let prepared = prepared_from_targets(targets, sample_rate_hz);
+        // SAFETY: The caller guarantees writable storage and preparation is complete.
+        unsafe { ptr::write_unaligned(output, prepared) };
+        DbStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Applies an already designed fixed target and begins the existing bounded ramp.
+///
+/// This call performs only fixed validation and copies. It performs no coefficient design,
+/// allocation, lock, wait, I/O, logging, reset, pointer replacement, or destruction.
+///
+/// # Safety
+///
+/// `processor` must be a live handle returned by `db_processor_create`. `targets` must point to a
+/// readable `struct_size`; a matching size requires the complete target to be readable. The call
+/// must not overlap another call on the same handle.
+pub unsafe extern "C" fn db_processor_apply_prepared_v1(
+    processor: *mut DbProcessor,
+    targets: *const DbPreparedRuntimeTargetsV1,
+) -> DbStatus {
+    ffi_guard(|| {
+        if processor.is_null() {
+            return DbStatus::NullPointer;
+        }
+        let targets = match unsafe { read_prepared_targets(targets) } {
+            Ok(targets) => targets,
+            Err(status) => return status,
+        };
+        if !prepared_values_are_valid(&targets) {
+            return DbStatus::InvalidConfiguration;
+        }
+        // SAFETY: The caller owns a live handle returned by db_processor_create.
+        let processor = unsafe { &mut *processor };
+        if targets.sample_rate_hz != processor.sample_rate_hz {
+            return DbStatus::InvalidConfiguration;
+        }
+        processor
+            .processor
+            .apply_runtime_targets(targets_from_prepared(targets));
+        DbStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Applies a plan constrained to the public 0.01 dB grid from immutable Rust-owned tables.
+///
+/// The tables are built when the processor is created and remain immutable until it is destroyed
+/// after processing stops. This call performs no coefficient design, transcendental math,
+/// allocation, lock, wait, I/O, logging, table mutation, pointer replacement, or destruction.
+///
+/// # Safety
+///
+/// `processor` must be a live handle returned by `db_processor_create`. `plan` must point to a
+/// readable `struct_size`; a matching size requires the complete plan to be readable. The call
+/// must not overlap another call on the same handle.
+pub unsafe extern "C" fn db_processor_apply_stepped_plan_v1(
+    processor: *mut DbProcessor,
+    plan: *const DbRuntimePlanV1,
+) -> DbStatus {
+    ffi_guard(|| {
+        if processor.is_null() {
+            return DbStatus::NullPointer;
+        }
+        let plan = match unsafe { read_runtime_plan(plan) } {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+        if !runtime_plan_values_are_valid(&plan) {
+            return DbStatus::InvalidConfiguration;
+        }
+        let Some((output_index, eq_indices)) = stepped_indices(&plan) else {
+            return DbStatus::InvalidConfiguration;
+        };
+        // SAFETY: The caller owns a live handle returned by db_processor_create.
+        let processor = unsafe { &mut *processor };
+        let targets =
+            processor
+                .stepped_automation
+                .targets(plan.bypass == 1, output_index, eq_indices);
+        processor.processor.apply_runtime_targets(targets);
+        DbStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Prepares and replaces the processor's numeric targets after validating the complete V1 plan.
+///
+/// This compatibility call performs coefficient design and transcendental math. It is not safe to
+/// call from an audio callback; realtime callers use one of the two apply functions above.
 ///
 /// # Safety
 ///
@@ -30,20 +176,13 @@ pub unsafe extern "C" fn db_processor_set_plan_v1(
     plan: *const DbRuntimePlanV1,
 ) -> DbStatus {
     ffi_guard(|| {
-        if processor.is_null() || plan.is_null() {
+        if processor.is_null() {
             return DbStatus::NullPointer;
         }
-        // SAFETY: The caller guarantees the first u32 is readable. A shorter layout fails before
-        // the complete current structure is accessed.
-        let struct_size = unsafe { ptr::read_unaligned(plan.cast::<u32>()) };
-        if struct_size as usize != size_of::<DbRuntimePlanV1>() {
-            return DbStatus::IncompatibleVersion;
-        }
-        // SAFETY: A matching struct_size requires the full current structure to be readable.
-        let plan = unsafe { ptr::read_unaligned(plan) };
-        if !runtime_plan_version_is_compatible(&plan) {
-            return DbStatus::IncompatibleVersion;
-        }
+        let plan = match unsafe { read_runtime_plan(plan) } {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
         if !runtime_plan_values_are_valid(&plan) {
             return DbStatus::InvalidConfiguration;
         }
@@ -122,6 +261,107 @@ unsafe fn read_meter_request_header(output: *const DbMeterSnapshotV1) -> (u32, u
     }
 }
 
+unsafe fn read_runtime_plan(
+    plan: *const DbRuntimePlanV1,
+) -> std::result::Result<DbRuntimePlanV1, DbStatus> {
+    if plan.is_null() {
+        return Err(DbStatus::NullPointer);
+    }
+    // SAFETY: The caller guarantees the first u32 is readable. A shorter layout fails before the
+    // complete current structure is accessed.
+    let struct_size = unsafe { ptr::read_unaligned(plan.cast::<u32>()) };
+    if struct_size as usize != size_of::<DbRuntimePlanV1>() {
+        return Err(DbStatus::IncompatibleVersion);
+    }
+    // SAFETY: A matching struct_size requires the full current structure to be readable.
+    let plan = unsafe { ptr::read_unaligned(plan) };
+    if !runtime_plan_version_is_compatible(&plan) {
+        return Err(DbStatus::IncompatibleVersion);
+    }
+    Ok(plan)
+}
+
+unsafe fn read_prepared_targets(
+    targets: *const DbPreparedRuntimeTargetsV1,
+) -> std::result::Result<DbPreparedRuntimeTargetsV1, DbStatus> {
+    if targets.is_null() {
+        return Err(DbStatus::NullPointer);
+    }
+    // SAFETY: The caller guarantees the first u32 is readable. A shorter layout fails before the
+    // complete current structure is accessed.
+    let struct_size = unsafe { ptr::read_unaligned(targets.cast::<u32>()) };
+    if struct_size as usize != size_of::<DbPreparedRuntimeTargetsV1>() {
+        return Err(DbStatus::IncompatibleVersion);
+    }
+    // SAFETY: A matching struct_size requires the full current structure to be readable.
+    let targets = unsafe { ptr::read_unaligned(targets) };
+    if targets.abi_version != DB_ABI_VERSION
+        || targets.processor_version != DB_PROCESSOR_VERSION
+        || targets.reserved != 0
+    {
+        return Err(DbStatus::IncompatibleVersion);
+    }
+    Ok(targets)
+}
+
+fn prepared_from_targets(
+    targets: ProcessorTargets,
+    sample_rate_hz: u32,
+) -> DbPreparedRuntimeTargetsV1 {
+    let (filter_coefficients, gain, wet) = targets.components();
+    DbPreparedRuntimeTargetsV1 {
+        struct_size: size_of::<DbPreparedRuntimeTargetsV1>() as u32,
+        abi_version: DB_ABI_VERSION,
+        processor_version: DB_PROCESSOR_VERSION,
+        sample_rate_hz,
+        filter_coefficients,
+        gain,
+        wet,
+        reserved: 0,
+    }
+}
+
+fn targets_from_prepared(targets: DbPreparedRuntimeTargetsV1) -> ProcessorTargets {
+    ProcessorTargets::from_components(targets.filter_coefficients, targets.gain, targets.wet)
+}
+
+fn prepared_values_are_valid(targets: &DbPreparedRuntimeTargetsV1) -> bool {
+    targets
+        .filter_coefficients
+        .iter()
+        .flatten()
+        .all(|coefficient| {
+            coefficient.is_finite() && coefficient.abs() <= MAX_ABS_FILTER_COEFFICIENT
+        })
+        && targets.gain.is_finite()
+        && (MIN_PREPARED_GAIN..=MAX_PREPARED_GAIN).contains(&targets.gain)
+        && (targets.wet == 0.0 || targets.wet == 1.0)
+}
+
+fn stepped_indices(plan: &DbRuntimePlanV1) -> Option<(usize, [usize; 3])> {
+    Some((
+        centibel_index(plan.applied_gain_db, -1_200, 1_200)?,
+        [
+            centibel_index(plan.eq_gains_db[0], -300, 300)?,
+            centibel_index(plan.eq_gains_db[1], -300, 300)?,
+            centibel_index(plan.eq_gains_db[2], -300, 300)?,
+        ],
+    ))
+}
+
+fn centibel_index(value: f64, minimum: i32, maximum: i32) -> Option<usize> {
+    let scaled = value * 100.0;
+    let rounded = scaled.round();
+    if !scaled.is_finite() || (scaled - rounded).abs() > 1.0e-8 {
+        return None;
+    }
+    let centibels = rounded as i32;
+    if !(minimum..=maximum).contains(&centibels) {
+        return None;
+    }
+    Some((centibels - minimum) as usize)
+}
+
 fn runtime_plan_values_are_valid(plan: &DbRuntimePlanV1) -> bool {
     plan.bypass <= 1
         && plan.applied_gain_db.is_finite()
@@ -140,6 +380,8 @@ mod tests {
     use std::ptr;
 
     use super::*;
+    use crate::dsp::coefficient_design_count_for_tests;
+    use crate::ffi::{DB_PLAN_SCHEMA_VERSION, db_processor_create, db_processor_destroy};
 
     #[test]
     fn meter_request_header_reader_does_not_require_initialized_peaks() {
@@ -165,5 +407,46 @@ mod tests {
                 0,
             )
         );
+    }
+
+    #[test]
+    fn realtime_apply_paths_never_design_coefficients() {
+        let plan = DbRuntimePlanV1 {
+            struct_size: size_of::<DbRuntimePlanV1>() as u32,
+            abi_version: DB_ABI_VERSION,
+            plan_schema_version: DB_PLAN_SCHEMA_VERSION,
+            processor_version: DB_PROCESSOR_VERSION,
+            bypass: 0,
+            reserved: 0,
+            applied_gain_db: 1.25,
+            eq_gains_db: [0.5, -1.5, 2.0],
+        };
+        let mut processor = ptr::null_mut();
+        assert_eq!(
+            unsafe { db_processor_create(&plan, 48_000.0, 64, &mut processor) },
+            DbStatus::Ok
+        );
+        let mut prepared = MaybeUninit::<DbPreparedRuntimeTargetsV1>::uninit();
+        assert_eq!(
+            unsafe { db_prepare_runtime_plan_v1(&plan, 48_000.0, prepared.as_mut_ptr()) },
+            DbStatus::Ok
+        );
+        // SAFETY: A successful prepare writes the complete fixed target.
+        let prepared = unsafe { prepared.assume_init() };
+        let designs_before = coefficient_design_count_for_tests();
+
+        for _ in 0..100 {
+            assert_eq!(
+                unsafe { db_processor_apply_prepared_v1(processor, &prepared) },
+                DbStatus::Ok
+            );
+            assert_eq!(
+                unsafe { db_processor_apply_stepped_plan_v1(processor, &plan) },
+                DbStatus::Ok
+            );
+        }
+
+        assert_eq!(coefficient_design_count_for_tests(), designs_before);
+        assert_eq!(unsafe { db_processor_destroy(processor) }, DbStatus::Ok);
     }
 }

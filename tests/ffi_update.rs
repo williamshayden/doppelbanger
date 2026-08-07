@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use doppelbanger::{
     DB_ABI_VERSION, DB_MAX_BLOCK_FRAMES, DB_PLAN_SCHEMA_VERSION, DB_PROCESSOR_VERSION,
-    DbMeterSnapshotV1, DbProcessor, DbRuntimePlanV1, DbStatus, db_processor_create,
-    db_processor_destroy, db_processor_get_meter_v1, db_processor_process_f32,
+    DbMeterSnapshotV1, DbPreparedRuntimeTargetsV1, DbProcessor, DbRuntimePlanV1, DbStatus,
+    db_prepare_runtime_plan_v1, db_processor_apply_prepared_v1, db_processor_apply_stepped_plan_v1,
+    db_processor_create, db_processor_destroy, db_processor_get_meter_v1, db_processor_process_f32,
     db_processor_set_plan_v1,
 };
 
@@ -77,6 +78,370 @@ fn update_and_meter_preserve_the_v1_layout_and_status_contracts() {
     assert_eq!(offset_of!(DbMeterSnapshotV1, reserved), 12);
     assert_eq!(offset_of!(DbMeterSnapshotV1, input_peak), 16);
     assert_eq!(offset_of!(DbMeterSnapshotV1, output_peak), 24);
+
+    assert_eq!(size_of::<DbPreparedRuntimeTargetsV1>(), 88);
+    assert_eq!(align_of::<DbPreparedRuntimeTargetsV1>(), 4);
+    assert_eq!(offset_of!(DbPreparedRuntimeTargetsV1, struct_size), 0);
+    assert_eq!(offset_of!(DbPreparedRuntimeTargetsV1, abi_version), 4);
+    assert_eq!(offset_of!(DbPreparedRuntimeTargetsV1, processor_version), 8);
+    assert_eq!(offset_of!(DbPreparedRuntimeTargetsV1, sample_rate_hz), 12);
+    assert_eq!(
+        offset_of!(DbPreparedRuntimeTargetsV1, filter_coefficients),
+        16
+    );
+    assert_eq!(offset_of!(DbPreparedRuntimeTargetsV1, gain), 76);
+    assert_eq!(offset_of!(DbPreparedRuntimeTargetsV1, wet), 80);
+    assert_eq!(offset_of!(DbPreparedRuntimeTargetsV1, reserved), 84);
+}
+
+#[test]
+fn prepare_runtime_plan_validates_every_input_and_writes_only_on_success() {
+    let plan = runtime_plan();
+    let sentinel = prepared_sentinel();
+
+    let mut output = sentinel;
+    assert_eq!(
+        unsafe { db_prepare_runtime_plan_v1(ptr::null(), 48_000.0, &mut output) },
+        DbStatus::NullPointer
+    );
+    assert_eq!(output, sentinel);
+    assert_eq!(
+        unsafe { db_prepare_runtime_plan_v1(&plan, 48_000.0, ptr::null_mut()) },
+        DbStatus::NullPointer
+    );
+
+    for mutate in [
+        |value: &mut DbRuntimePlanV1| value.struct_size -= 1,
+        |value: &mut DbRuntimePlanV1| value.abi_version += 1,
+        |value: &mut DbRuntimePlanV1| value.plan_schema_version += 1,
+        |value: &mut DbRuntimePlanV1| value.processor_version += 1,
+        |value: &mut DbRuntimePlanV1| value.reserved = 1,
+    ] {
+        let mut incompatible = plan;
+        mutate(&mut incompatible);
+        output = sentinel;
+        assert_eq!(
+            unsafe { db_prepare_runtime_plan_v1(&incompatible, 48_000.0, &mut output) },
+            DbStatus::IncompatibleVersion
+        );
+        assert_eq!(output, sentinel);
+    }
+
+    for invalid in [
+        DbRuntimePlanV1 {
+            applied_gain_db: f64::NAN,
+            ..plan
+        },
+        DbRuntimePlanV1 {
+            applied_gain_db: 12.001,
+            ..plan
+        },
+        DbRuntimePlanV1 {
+            eq_gains_db: [0.0, f64::INFINITY, 0.0],
+            ..plan
+        },
+        DbRuntimePlanV1 {
+            eq_gains_db: [0.0, 0.0, -3.001],
+            ..plan
+        },
+        DbRuntimePlanV1 {
+            bypass: 1,
+            applied_gain_db: 1.0,
+            ..plan
+        },
+    ] {
+        output = sentinel;
+        assert_eq!(
+            unsafe { db_prepare_runtime_plan_v1(&invalid, 48_000.0, &mut output) },
+            DbStatus::InvalidConfiguration
+        );
+        assert_eq!(output, sentinel);
+    }
+
+    for sample_rate in [0.0, 44_101.0, f64::NAN, f64::INFINITY] {
+        output = sentinel;
+        assert_eq!(
+            unsafe { db_prepare_runtime_plan_v1(&plan, sample_rate, &mut output) },
+            DbStatus::InvalidConfiguration
+        );
+        assert_eq!(output, sentinel);
+    }
+
+    assert_eq!(
+        unsafe { db_prepare_runtime_plan_v1(&plan, 48_000.0, &mut output) },
+        DbStatus::Ok
+    );
+    assert_eq!(
+        output,
+        DbPreparedRuntimeTargetsV1 {
+            struct_size: size_of::<DbPreparedRuntimeTargetsV1>() as u32,
+            abi_version: DB_ABI_VERSION,
+            processor_version: DB_PROCESSOR_VERSION,
+            sample_rate_hz: 48_000,
+            filter_coefficients: output.filter_coefficients,
+            gain: output.gain,
+            wet: output.wet,
+            reserved: 0,
+        }
+    );
+    assert!(
+        output
+            .filter_coefficients
+            .iter()
+            .flatten()
+            .chain([&output.gain, &output.wet])
+            .all(|value| value.is_finite())
+    );
+}
+
+#[test]
+fn prepared_apply_rejects_malformed_targets_and_sample_rate_mismatch_atomically() {
+    let initial = runtime_plan();
+    let accepted_plan = DbRuntimePlanV1 {
+        applied_gain_db: 1.234,
+        eq_gains_db: [0.123, -2.345, 2.999],
+        ..initial
+    };
+    let accepted = prepare(&accepted_plan, 48_000.0);
+    let subject = create(&initial, 512, 48_000.0);
+    let reference = create(&initial, 512, 48_000.0);
+
+    assert_eq!(
+        unsafe { db_processor_apply_prepared_v1(ptr::null_mut(), &accepted) },
+        DbStatus::NullPointer
+    );
+    assert_eq!(
+        unsafe { db_processor_apply_prepared_v1(subject, ptr::null()) },
+        DbStatus::NullPointer
+    );
+    assert_eq!(
+        unsafe { db_processor_apply_prepared_v1(subject, &accepted) },
+        DbStatus::Ok
+    );
+    assert_eq!(
+        unsafe { db_processor_apply_prepared_v1(reference, &accepted) },
+        DbStatus::Ok
+    );
+
+    let mut wrong_size = accepted;
+    wrong_size.struct_size -= 1;
+    let mut wrong_abi = accepted;
+    wrong_abi.abi_version += 1;
+    let mut wrong_processor = accepted;
+    wrong_processor.processor_version += 1;
+    let mut wrong_reserved = accepted;
+    wrong_reserved.reserved = 1;
+    for incompatible in [wrong_size, wrong_abi, wrong_processor, wrong_reserved] {
+        assert_eq!(
+            unsafe { db_processor_apply_prepared_v1(subject, &incompatible) },
+            DbStatus::IncompatibleVersion
+        );
+    }
+
+    let mut wrong_rate = accepted;
+    wrong_rate.sample_rate_hz = 44_100;
+    let mut non_finite_coefficient = accepted;
+    non_finite_coefficient.filter_coefficients[1][3] = f32::NAN;
+    let mut unbounded_coefficient = accepted;
+    unbounded_coefficient.filter_coefficients[2][4] = 9.0;
+    let mut non_finite_gain = accepted;
+    non_finite_gain.gain = f32::INFINITY;
+    let mut unbounded_gain = accepted;
+    unbounded_gain.gain = 4.1;
+    let mut invalid_wet = accepted;
+    invalid_wet.wet = 0.5;
+    for invalid in [
+        wrong_rate,
+        non_finite_coefficient,
+        unbounded_coefficient,
+        non_finite_gain,
+        unbounded_gain,
+        invalid_wet,
+    ] {
+        assert_eq!(
+            unsafe { db_processor_apply_prepared_v1(subject, &invalid) },
+            DbStatus::InvalidConfiguration
+        );
+    }
+
+    let mut subject_left = [0.125_f32; 512];
+    let mut subject_right = [-0.25_f32; 512];
+    let mut reference_left = subject_left;
+    let mut reference_right = subject_right;
+    assert_eq!(
+        unsafe {
+            db_processor_process_f32(
+                subject,
+                subject_left.as_mut_ptr(),
+                subject_right.as_mut_ptr(),
+                512,
+            )
+        },
+        DbStatus::Ok
+    );
+    assert_eq!(
+        unsafe {
+            db_processor_process_f32(
+                reference,
+                reference_left.as_mut_ptr(),
+                reference_right.as_mut_ptr(),
+                512,
+            )
+        },
+        DbStatus::Ok
+    );
+    assert_eq!(subject_left, reference_left);
+    assert_eq!(subject_right, reference_right);
+
+    assert_eq!(unsafe { db_processor_destroy(subject) }, DbStatus::Ok);
+    assert_eq!(unsafe { db_processor_destroy(reference) }, DbStatus::Ok);
+}
+
+#[test]
+fn prepared_apply_matches_the_existing_exact_set_plan_path() {
+    let initial = runtime_plan();
+    let update = DbRuntimePlanV1 {
+        applied_gain_db: 1.234,
+        eq_gains_db: [0.123, -2.345, 2.999],
+        ..initial
+    };
+    let prepared = prepare(&update, 48_000.0);
+    let prepared_handle = create(&initial, 512, 48_000.0);
+    let set_plan_handle = create(&initial, 512, 48_000.0);
+
+    assert_eq!(
+        unsafe { db_processor_apply_prepared_v1(prepared_handle, &prepared) },
+        DbStatus::Ok
+    );
+    assert_eq!(
+        unsafe { db_processor_set_plan_v1(set_plan_handle, &update) },
+        DbStatus::Ok
+    );
+
+    let mut prepared_left = [0.125_f32; 512];
+    let mut prepared_right = [-0.25_f32; 512];
+    let mut set_plan_left = prepared_left;
+    let mut set_plan_right = prepared_right;
+    assert_eq!(
+        unsafe {
+            db_processor_process_f32(
+                prepared_handle,
+                prepared_left.as_mut_ptr(),
+                prepared_right.as_mut_ptr(),
+                512,
+            )
+        },
+        DbStatus::Ok
+    );
+    assert_eq!(
+        unsafe {
+            db_processor_process_f32(
+                set_plan_handle,
+                set_plan_left.as_mut_ptr(),
+                set_plan_right.as_mut_ptr(),
+                512,
+            )
+        },
+        DbStatus::Ok
+    );
+    assert_eq!(prepared_left, set_plan_left);
+    assert_eq!(prepared_right, set_plan_right);
+
+    assert_eq!(
+        unsafe { db_processor_destroy(prepared_handle) },
+        DbStatus::Ok
+    );
+    assert_eq!(
+        unsafe { db_processor_destroy(set_plan_handle) },
+        DbStatus::Ok
+    );
+}
+
+#[test]
+fn stepped_apply_requires_the_centidecibel_grid_and_matches_exact_design() {
+    let initial = runtime_plan();
+    let grid_plan = DbRuntimePlanV1 {
+        applied_gain_db: 6.0,
+        eq_gains_db: [2.0, -1.5, 0.75],
+        ..initial
+    };
+    let stepped_handle = create(&initial, 512, 48_000.0);
+    let set_plan_handle = create(&initial, 512, 48_000.0);
+
+    assert_eq!(
+        unsafe { db_processor_apply_stepped_plan_v1(ptr::null_mut(), &grid_plan) },
+        DbStatus::NullPointer
+    );
+    assert_eq!(
+        unsafe { db_processor_apply_stepped_plan_v1(stepped_handle, ptr::null()) },
+        DbStatus::NullPointer
+    );
+    assert_eq!(
+        unsafe { db_processor_apply_stepped_plan_v1(stepped_handle, &grid_plan) },
+        DbStatus::Ok
+    );
+    assert_eq!(
+        unsafe { db_processor_set_plan_v1(set_plan_handle, &grid_plan) },
+        DbStatus::Ok
+    );
+
+    for invalid in [
+        DbRuntimePlanV1 {
+            applied_gain_db: 6.001,
+            ..grid_plan
+        },
+        DbRuntimePlanV1 {
+            eq_gains_db: [2.001, -1.5, 0.75],
+            ..grid_plan
+        },
+        DbRuntimePlanV1 {
+            eq_gains_db: [2.0, -1.505, 0.75],
+            ..grid_plan
+        },
+    ] {
+        assert_eq!(
+            unsafe { db_processor_apply_stepped_plan_v1(stepped_handle, &invalid) },
+            DbStatus::InvalidConfiguration
+        );
+    }
+
+    let mut stepped_left = [0.125_f32; 512];
+    let mut stepped_right = [-0.25_f32; 512];
+    let mut set_plan_left = stepped_left;
+    let mut set_plan_right = stepped_right;
+    assert_eq!(
+        unsafe {
+            db_processor_process_f32(
+                stepped_handle,
+                stepped_left.as_mut_ptr(),
+                stepped_right.as_mut_ptr(),
+                512,
+            )
+        },
+        DbStatus::Ok
+    );
+    assert_eq!(
+        unsafe {
+            db_processor_process_f32(
+                set_plan_handle,
+                set_plan_left.as_mut_ptr(),
+                set_plan_right.as_mut_ptr(),
+                512,
+            )
+        },
+        DbStatus::Ok
+    );
+    assert_eq!(stepped_left, set_plan_left);
+    assert_eq!(stepped_right, set_plan_right);
+
+    assert_eq!(
+        unsafe { db_processor_destroy(stepped_handle) },
+        DbStatus::Ok
+    );
+    assert_eq!(
+        unsafe { db_processor_destroy(set_plan_handle) },
+        DbStatus::Ok
+    );
 }
 
 #[test]
@@ -419,6 +784,93 @@ fn ten_thousand_update_process_cycles_allocate_nothing() {
 }
 
 #[test]
+fn ten_thousand_prepared_apply_process_cycles_allocate_and_deallocate_nothing() {
+    let initial = runtime_plan();
+    let alternate = DbRuntimePlanV1 {
+        applied_gain_db: 1.234,
+        eq_gains_db: [0.123, -2.345, 2.999],
+        ..initial
+    };
+    let handle = create(&initial, 32, 48_000.0);
+    let targets = [prepare(&initial, 48_000.0), prepare(&alternate, 48_000.0)];
+    let mut left = [0.125_f32; 32];
+    let mut right = [-0.125_f32; 32];
+    ALLOCATIONS.store(0, Ordering::SeqCst);
+    DEALLOCATIONS.store(0, Ordering::SeqCst);
+
+    COUNT_MEMORY.with(|enabled| enabled.set(true));
+    for cycle in 0..10_000 {
+        left.fill(0.125);
+        right.fill(-0.125);
+        let update_status = unsafe { db_processor_apply_prepared_v1(handle, &targets[cycle & 1]) };
+        let process_status =
+            unsafe { db_processor_process_f32(handle, left.as_mut_ptr(), right.as_mut_ptr(), 32) };
+        if update_status != DbStatus::Ok || process_status != DbStatus::Ok {
+            COUNT_MEMORY.with(|enabled| enabled.set(false));
+            panic!("cycle {cycle} failed: update={update_status:?}, process={process_status:?}");
+        }
+    }
+    COUNT_MEMORY.with(|enabled| enabled.set(false));
+
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
+    assert_eq!(DEALLOCATIONS.load(Ordering::SeqCst), 0);
+    assert_eq!(unsafe { db_processor_destroy(handle) }, DbStatus::Ok);
+}
+
+#[test]
+fn ten_thousand_stepped_apply_process_cycles_allocate_and_deallocate_nothing() {
+    let initial = runtime_plan();
+    let alternate = DbRuntimePlanV1 {
+        applied_gain_db: 6.0,
+        eq_gains_db: [2.0, -1.5, 0.75],
+        ..initial
+    };
+    let handle = create(&initial, 32, 48_000.0);
+    let plans = [initial, alternate];
+    let mut left = [0.125_f32; 32];
+    let mut right = [-0.125_f32; 32];
+    ALLOCATIONS.store(0, Ordering::SeqCst);
+    DEALLOCATIONS.store(0, Ordering::SeqCst);
+
+    COUNT_MEMORY.with(|enabled| enabled.set(true));
+    for cycle in 0..10_000 {
+        left.fill(0.125);
+        right.fill(-0.125);
+        let update_status =
+            unsafe { db_processor_apply_stepped_plan_v1(handle, &plans[cycle & 1]) };
+        let process_status =
+            unsafe { db_processor_process_f32(handle, left.as_mut_ptr(), right.as_mut_ptr(), 32) };
+        if update_status != DbStatus::Ok || process_status != DbStatus::Ok {
+            COUNT_MEMORY.with(|enabled| enabled.set(false));
+            panic!("cycle {cycle} failed: update={update_status:?}, process={process_status:?}");
+        }
+    }
+    COUNT_MEMORY.with(|enabled| enabled.set(false));
+
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
+    assert_eq!(DEALLOCATIONS.load(Ordering::SeqCst), 0);
+    assert_eq!(unsafe { db_processor_destroy(handle) }, DbStatus::Ok);
+}
+
+#[test]
+fn stepped_tables_cover_every_supported_sample_rate_and_boundary_index() {
+    let boundary = DbRuntimePlanV1 {
+        applied_gain_db: 12.0,
+        eq_gains_db: [-3.0, 3.0, -3.0],
+        ..runtime_plan()
+    };
+    for sample_rate in [44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0] {
+        let handle = create(&runtime_plan(), 1, sample_rate);
+        assert_eq!(
+            unsafe { db_processor_apply_stepped_plan_v1(handle, &boundary) },
+            DbStatus::Ok,
+            "sample_rate={sample_rate}"
+        );
+        assert_eq!(unsafe { db_processor_destroy(handle) }, DbStatus::Ok);
+    }
+}
+
+#[test]
 fn randomized_supported_sample_rates_and_block_sizes_remain_finite() {
     let sample_rates = [44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0];
     let block_sizes = [1_u32, 2, 7, 31, 64, 127, 512, 2_047, 8_192];
@@ -476,6 +928,28 @@ fn create(plan: &DbRuntimePlanV1, max_block_frames: u32, sample_rate_hz: f64) ->
     );
     assert!(!handle.is_null());
     handle
+}
+
+fn prepare(plan: &DbRuntimePlanV1, sample_rate_hz: f64) -> DbPreparedRuntimeTargetsV1 {
+    let mut prepared = prepared_sentinel();
+    assert_eq!(
+        unsafe { db_prepare_runtime_plan_v1(plan, sample_rate_hz, &mut prepared) },
+        DbStatus::Ok
+    );
+    prepared
+}
+
+fn prepared_sentinel() -> DbPreparedRuntimeTargetsV1 {
+    DbPreparedRuntimeTargetsV1 {
+        struct_size: 0x1111_1111,
+        abi_version: 0x2222_2222,
+        processor_version: 0x3333_3333,
+        sample_rate_hz: 0x4444_4444,
+        filter_coefficients: [[-99.0; 5]; 3],
+        gain: -98.0,
+        wet: -97.0,
+        reserved: 0x5555_5555,
+    }
 }
 
 fn runtime_plan() -> DbRuntimePlanV1 {

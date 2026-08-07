@@ -1,10 +1,25 @@
 use std::fmt;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use biquad::{Biquad, Coefficients, DirectForm2Transposed, ToHertz, Type};
 
 use crate::{
     DoppelbangerError, EqFilterKindV1, EqFilterV1, MasteringPlanV1, PROCESSOR_VERSION, Result,
 };
+
+const EQ_AUTOMATION_STEPS: usize = 601;
+const OUTPUT_AUTOMATION_STEPS: usize = 2_401;
+const EQ_ZERO_INDEX: usize = 300;
+const OUTPUT_ZERO_INDEX: usize = 1_200;
+
+#[cfg(test)]
+static COEFFICIENT_DESIGN_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn coefficient_design_count_for_tests() -> usize {
+    COEFFICIENT_DESIGN_COUNT.load(Ordering::Relaxed)
+}
 
 pub struct MasteringProcessor {
     filters: [StereoBiquad; 3],
@@ -172,7 +187,7 @@ pub(crate) struct ProcessorTargets {
 }
 
 impl ProcessorTargets {
-    fn new(
+    pub(crate) fn new(
         bypass: bool,
         applied_gain_db: f64,
         eq_gains_db: [f64; 3],
@@ -229,6 +244,122 @@ impl ProcessorTargets {
             gain: step(self.gain, target.gain, remaining),
             wet: step(self.wet, target.wet, remaining),
         }
+    }
+
+    pub(crate) fn from_components(filter_coefficients: [[f32; 5]; 3], gain: f32, wet: f32) -> Self {
+        Self {
+            filter_coefficients: filter_coefficients.map(coefficients_from_array),
+            gain,
+            wet,
+        }
+    }
+
+    pub(crate) fn components(self) -> ([[f32; 5]; 3], f32, f32) {
+        (
+            self.filter_coefficients.map(coefficients_to_array),
+            self.gain,
+            self.wet,
+        )
+    }
+}
+
+pub(crate) struct SteppedAutomationTables {
+    low_eq: Box<[Coefficients<f32>]>,
+    mid_eq: Box<[Coefficients<f32>]>,
+    high_eq: Box<[Coefficients<f32>]>,
+    output_gain: Box<[f32]>,
+    base: ProcessorTargets,
+}
+
+impl SteppedAutomationTables {
+    pub(crate) fn new(sample_rate_hz: u32) -> Result<Self> {
+        let low_eq = coefficient_table(EqFilterKindV1::LowShelf, 120.0, 0.707, sample_rate_hz)?;
+        let mid_eq = coefficient_table(EqFilterKindV1::Bell, 1_000.0, 0.5, sample_rate_hz)?;
+        let high_eq = coefficient_table(EqFilterKindV1::HighShelf, 6_000.0, 0.707, sample_rate_hz)?;
+        let output_gain: Box<[f32]> = (-1_200..=1_200)
+            .map(|centibel| {
+                let gain_db = centibel as f64 / 100.0;
+                10.0_f32.powf(gain_db as f32 / 20.0)
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        debug_assert_eq!(low_eq.len(), EQ_AUTOMATION_STEPS);
+        debug_assert_eq!(mid_eq.len(), EQ_AUTOMATION_STEPS);
+        debug_assert_eq!(high_eq.len(), EQ_AUTOMATION_STEPS);
+        debug_assert_eq!(output_gain.len(), OUTPUT_AUTOMATION_STEPS);
+        let base = ProcessorTargets {
+            filter_coefficients: [
+                low_eq[EQ_ZERO_INDEX],
+                mid_eq[EQ_ZERO_INDEX],
+                high_eq[EQ_ZERO_INDEX],
+            ],
+            gain: output_gain[OUTPUT_ZERO_INDEX],
+            wet: 1.0,
+        };
+        Ok(Self {
+            low_eq,
+            mid_eq,
+            high_eq,
+            output_gain,
+            base,
+        })
+    }
+
+    pub(crate) fn targets(
+        &self,
+        bypass: bool,
+        output_index: usize,
+        eq_indices: [usize; 3],
+    ) -> ProcessorTargets {
+        let mut targets = self.base;
+        targets.filter_coefficients = [
+            self.low_eq[eq_indices[0]],
+            self.mid_eq[eq_indices[1]],
+            self.high_eq[eq_indices[2]],
+        ];
+        targets.gain = self.output_gain[output_index];
+        targets.wet = if bypass { 0.0 } else { 1.0 };
+        targets
+    }
+}
+
+fn coefficient_table(
+    kind: EqFilterKindV1,
+    frequency_hz: f64,
+    q: f64,
+    sample_rate_hz: u32,
+) -> Result<Box<[Coefficients<f32>]>> {
+    (-300..=300)
+        .map(|centibel| {
+            StereoBiquad::coefficients(
+                kind,
+                frequency_hz,
+                q,
+                centibel as f64 / 100.0,
+                sample_rate_hz,
+            )
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Vec::into_boxed_slice)
+}
+
+fn coefficients_to_array(coefficients: Coefficients<f32>) -> [f32; 5] {
+    [
+        coefficients.a1,
+        coefficients.a2,
+        coefficients.b0,
+        coefficients.b1,
+        coefficients.b2,
+    ]
+}
+
+fn coefficients_from_array(values: [f32; 5]) -> Coefficients<f32> {
+    Coefficients {
+        a1: values[0],
+        a2: values[1],
+        b0: values[2],
+        b1: values[3],
+        b2: values[4],
     }
 }
 
@@ -293,6 +424,8 @@ impl StereoBiquad {
         gain_db: f64,
         sample_rate_hz: u32,
     ) -> Result<Coefficients<f32>> {
+        #[cfg(test)]
+        COEFFICIENT_DESIGN_COUNT.fetch_add(1, Ordering::Relaxed);
         let filter_type = match kind {
             EqFilterKindV1::LowShelf => Type::LowShelf(gain_db as f32),
             EqFilterKindV1::Bell => Type::PeakingEQ(gain_db as f32),
