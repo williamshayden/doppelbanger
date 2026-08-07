@@ -157,7 +157,9 @@ fn windows_distribution_is_native_and_container_free() {
         .find("## PD-031: The first product editor uses React in an iPlug2 WebView")
         .expect("PD-031 must remain present");
     let pd032_heading = "## PD-032: Public Windows distribution is native and container-free";
-    let pd032 = decisions.find(pd032_heading).expect("PD-032 must be present");
+    let pd032 = decisions
+        .find(pd032_heading)
+        .expect("PD-032 must be present");
     assert!(pd032 > pd031, "PD-032 must follow PD-031");
     assert_eq!(decisions.matches(pd032_heading).count(), 1);
 
@@ -208,10 +210,8 @@ fn windows_distribution_is_native_and_container_free() {
         "## Task 14: Gate the bundle with Steinberg Validator and pluginval 10",
         "## Task 15: Reproduce from a clean clone and complete Ableton's UI-NONE proof",
     );
-    let task14_leakage = markdown_checklist_item(
-        task14,
-        "same recursive dependency-closure inventory",
-    );
+    let task14_leakage =
+        markdown_checklist_item(task14, "same recursive dependency-closure inventory");
     assert!(task14_leakage.contains("same recursive dependency-closure inventory"));
     for category in [
         "WebView", "Node", "Docker", "WSL", "database", "service", "compiler",
@@ -279,8 +279,10 @@ fn windows_distribution_is_native_and_container_free() {
         "prerequisite installation or unexpected filesystem write",
     );
     assert!(listener_removed_gate.contains("listeners"));
-    assert!(!listener_removed_gate
-        .contains("prerequisite installation, listener, or unexpected filesystem write"));
+    assert!(
+        !listener_removed_gate
+            .contains("prerequisite installation, listener, or unexpected filesystem write")
+    );
     let wrapped_task15 = task15.replace(
         "statically linked pinned Steinberg headless host",
         "statically linked pinned\n  Steinberg headless host",
