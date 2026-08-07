@@ -1,0 +1,33 @@
+{
+  "name": "doppelbanger-editor",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "packageManager": "npm@11.16.0",
+  "scripts": {
+    "generate:bridge": "json2ts -i ../contracts/editor_bridge_v1.schema.json -o src/bridge/editor_bridge_v1.generated.ts",
+    "test": "vitest run",
+    "build": "vite build",
+    "test:visual": "playwright test",
+    "check": "npm run generate:bridge && git -C ../.. diff --exit-code -- plugin/ui/src/bridge/editor_bridge_v1.generated.ts && npm run test && npm run build && npm run test:visual"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@testing-library/jest-dom": "7.0.0",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.3",
+    "@types/node": "26.2.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.0.5",
+    "jsdom": "30.0.1",
+    "json-schema-to-typescript": "15.0.4",
+    "typescript": "7.0.2",
+    "vite": "8.2.1",
+    "vitest": "4.1.10"
+  }
+}

@@ -5,5 +5,9 @@
 tmp/
 var/
 build/
+plugin/ui/node_modules/
+plugin/ui/dist/
+plugin/ui/test-results/
+plugin/ui/playwright-report/
 .vs/
 CMakeUserPresets.json

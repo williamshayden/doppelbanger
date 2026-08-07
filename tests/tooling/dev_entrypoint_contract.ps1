@@ -28,8 +28,9 @@ function Assert-Equal {
 
 function New-NativeToolFixture {
     $tools = @{}
-    foreach ($name in @('rustc', 'cargo', 'cmake', 'ctest', 'ninja', 'cl', 'git', 'powershell')) {
-        $tools[$name] = "C:\doppelbanger-test-tools\$name.exe"
+    foreach ($name in @('rustc', 'cargo', 'cmake', 'ctest', 'ninja', 'cl', 'git', 'powershell', 'node', 'npm')) {
+        $extension = if ($name -eq 'npm') { 'cmd' } else { 'exe' }
+        $tools[$name] = "C:\doppelbanger-test-tools\$name.$extension"
     }
     return $tools
 }
@@ -70,10 +71,16 @@ function New-CommandResolver {
 function New-CommandRunner {
     param([System.Collections.Generic.List[object]]$Invocations)
     return {
-        param([string]$Path, [string[]]$Arguments)
-        $Invocations.Add([pscustomobject]@{ Path = $Path; Arguments = @($Arguments) })
+        param([string]$Path, [string[]]$Arguments, [string]$WorkingDirectory)
+        $Invocations.Add([pscustomobject]@{ Path = $Path; Arguments = @($Arguments); WorkingDirectory = $WorkingDirectory })
         if ($Path.EndsWith('rustc.exe', [StringComparison]::OrdinalIgnoreCase)) {
             return [pscustomobject]@{ Output = "rustc 1.97.1`nhost: x86_64-pc-windows-msvc"; ExitCode = 0 }
+        }
+        if ($Path.EndsWith('node.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Output = 'v24.18.1'; ExitCode = 0 }
+        }
+        if ($Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Output = '11.16.0'; ExitCode = 0 }
         }
         return [pscustomobject]@{ Output = ''; ExitCode = 0 }
     }.GetNewClosure()
@@ -348,7 +355,7 @@ catch {
 }
 Assert-True ([string]::IsNullOrEmpty($nativeRootError)) "doctor accepts a complete native chain ending at wininit.exe when its historical parent no longer resolves ($nativeRootError)"
 Assert-Equal (($nativeRootLookups | ForEach-Object { [string]$_ }) -join ',') (($nativeRootProcessIds[0..5] | ForEach-Object { [string]$_ }) -join ',') 'doctor stops ancestry inspection after recording wininit.exe'
-Assert-True ($nativeRootInvocations.Count -eq 1) 'native wininit-root ancestry only probes rustc host information'
+Assert-True ($nativeRootInvocations.Count -eq 3) 'native wininit-root ancestry probes Rust, Node, and npm versions'
 
 $missingIntermediateParentId = $PID + 808
 $missingIntermediateLookups = [System.Collections.Generic.List[int]]::new()
@@ -391,7 +398,7 @@ catch {
 }
 Assert-True ([string]::IsNullOrEmpty($processLookupError) -and $PID -eq $pidBeforeProcessLookup) "doctor accepts an injected native process lookup without overwriting the automatic process identifier ($processLookupError)"
 Assert-Equal (($automaticProcessFixture.Lookups | ForEach-Object { [string]$_ }) -join ',') (($automaticProcessFixture.ProcessIds | ForEach-Object { [string]$_ }) -join ',') 'doctor inspects the complete native chain from the automatic process identifier through wininit.exe'
-Assert-True ($lookupInvocations.Count -eq 1) 'complete injected native ancestry only probes rustc host information'
+Assert-True ($lookupInvocations.Count -eq 3) 'complete injected native ancestry probes Rust, Node, and npm versions'
 
 $missingTools = New-NativeToolFixture
 $missingTools.Remove('cl')
@@ -432,6 +439,12 @@ try {
             if ($Path.EndsWith('rustc.exe', [StringComparison]::OrdinalIgnoreCase)) {
                 return [pscustomobject]@{ Output = "rustc 1.97.1`nhost: x86_64-pc-windows-msvc"; ExitCode = 0 }
             }
+            if ($Path.EndsWith('node.exe', [StringComparison]::OrdinalIgnoreCase)) {
+                return [pscustomobject]@{ Output = 'v24.18.1'; ExitCode = 0 }
+            }
+            if ($Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase)) {
+                return [pscustomobject]@{ Output = '11.16.0'; ExitCode = 0 }
+            }
             return [pscustomobject]@{ Output = 'simulated native command failure'; ExitCode = 23 }
         }.GetNewClosure() | ForEach-Object { $nonzeroRunnerOutput.Add([string]$_) }
     $nonzeroRunnerError = ''
@@ -442,16 +455,27 @@ catch {
 Assert-Contains $nonzeroRunnerError 'DBDEV_TASK_FAILED' 'a nonzero command-runner result retains the stable dispatcher failure code'
 Assert-Contains $nonzeroRunnerError 'code 23' 'a nonzero command-runner result retains the exact process exit code'
 Assert-Contains ($nonzeroRunnerOutput -join "`n") 'simulated native command failure' 'a nonzero task emits captured process diagnostics before failing'
-Assert-True ($nonzeroRunnerInvocations.Count -eq 2) 'the dispatcher stops after the first nonzero task process result'
+Assert-True ($nonzeroRunnerInvocations.Count -eq 4) 'the dispatcher stops after the first nonzero task process result'
 
 foreach ($task in @('format', 'test', 'configure', 'build', 'validate')) {
     $result = Invoke-DevFixture -Task $task
     Assert-True ([string]::IsNullOrEmpty($result.Error)) "$task succeeds with checked native tools"
     Assert-True ($result.Invocations.Count -gt 0) "$task delegates to a checked executable"
     foreach ($invocation in $result.Invocations) {
-        Assert-True ($invocation.Path -match '^C:\\doppelbanger-test-tools\\.+\.exe$') "$task delegates only to checked native executables"
+        Assert-True ($invocation.Path -match '^C:\\doppelbanger-test-tools\\.+\.(?:exe|cmd)$') "$task delegates only to checked native executables"
     }
 }
+
+$uiTestResult = Invoke-DevFixture -Task ui-test
+$uiTestNpmInvocations = @($uiTestResult.Invocations | Where-Object { $_.Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) })
+Assert-True ([string]::IsNullOrEmpty($uiTestResult.Error)) 'ui-test succeeds with checked native tools'
+Assert-Equal $uiTestNpmInvocations.Count 2 'ui-test verifies npm and then runs the editor check'
+Assert-ArgumentVector $uiTestNpmInvocations[0] @('--version') 'ui-test verifies the exact checked npm executable'
+Assert-ArgumentVector $uiTestNpmInvocations[1] @('run', 'check') 'ui-test routes only the checked npm executable to the editor check'
+Assert-Equal $uiTestNpmInvocations[1].WorkingDirectory (Join-Path $repoRoot 'plugin\ui') 'ui-test runs the editor check from plugin/ui'
+$uiTestNodeInvocations = @($uiTestResult.Invocations | Where-Object { $_.Path.EndsWith('node.exe', [StringComparison]::OrdinalIgnoreCase) })
+Assert-Equal $uiTestNodeInvocations.Count 1 'ui-test verifies the exact checked native Node executable'
+Assert-ArgumentVector $uiTestNodeInvocations[0] @('--version') 'ui-test verifies the required Node version'
 
 $releasePreset = 'windows-msvc-x64-release'
 $validatorBuildTree = 'build/windows-vst3-validator'
