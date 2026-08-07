@@ -261,6 +261,16 @@ try {
             break
         }
         'build' {
+            $uiRoot = Join-Path $repoRoot 'plugin\ui'
+            $previousPlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+            try {
+                [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1', 'Process')
+                Invoke-DbDevTool -Path $tools.npm -Arguments @('ci', '--no-audit', '--no-fund') -WorkingDirectory $uiRoot
+                Invoke-DbDevTool -Path $tools.npm -Arguments @('run', 'build') -WorkingDirectory $uiRoot
+            }
+            finally {
+                [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $previousPlaywrightSkipBrowserDownload, 'Process')
+            }
             $ctest = Resolve-DbDevTool 'ctest'
             Invoke-DbDevTool -Path $tools.cmake -Arguments @('--build', '--preset', $releasePreset)
             Invoke-DbDevTool -Path $tools.cmake -Arguments @('--build', $validatorBuildTree, '--target', 'validator')
@@ -272,7 +282,13 @@ try {
             $wrapperPath = Join-Path $repoRoot 'tests\plugin\validate_vst3.ps1'
             $validatorPath = Join-Path $repoRoot 'build\windows-vst3-validator\bin\validator.exe'
             $pluginPath = Join-Path $repoRoot 'build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3'
+            $webAssetContractPath = Join-Path $repoRoot 'tests\tooling\web_asset_contract.ps1'
+            $webRoot = Join-Path $pluginPath 'Contents\Resources\web'
             $evidencePath = Join-Path $repoRoot 'var\validation\native-foundation'
+            Invoke-DbDevTool -Path $powershell -Arguments @(
+                '-NoProfile', '-File', $webAssetContractPath,
+                '-WebRoot', $webRoot
+            )
             Invoke-DbDevTool -Path $powershell -Arguments @(
                 '-NoProfile', '-File', $wrapperPath,
                 '-ValidatorPath', $validatorPath,

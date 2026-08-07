@@ -18,6 +18,7 @@ if(DOPPELBANGER_DEPLOY_PLUGIN)
 endif()
 
 include(cmake/PrepareIPlug2.cmake)
+include(cmake/PrepareWebView.cmake)
 include(cmake/BuildRust.cmake)
 
 doppelbanger_prepare_iplug2(DOPPELBANGER_IPLUG2_DIR)
@@ -28,12 +29,8 @@ set(IPLUG_DEPLOY_PLUGINS OFF CACHE BOOL
   "Never copy Doppelbanger plugins outside the build tree" FORCE)
 include("${IPLUG2_DIR}/iPlug2.cmake")
 
-# The pinned upstream core declares this optional WebView target by downloading
-# dependencies at configure time. This headless target never consumes it, so a
-# closed placeholder keeps the dependency graph offline without patching iPlug2.
-if(NOT TARGET iPlug2::Extras::IWebViewControl)
-  add_library(iPlug2::Extras::IWebViewControl INTERFACE IMPORTED GLOBAL)
-endif()
+doppelbanger_prepare_webview()
+include("${IPLUG2_DIR}/Scripts/cmake/WebView.cmake")
 include("${IPLUG2_DIR}/Scripts/cmake/VST3.cmake")
 
 include(CTest)
@@ -71,6 +68,7 @@ target_include_directories(PluginLifecycleTests PRIVATE
   "${CMAKE_SOURCE_DIR}/plugin")
 target_compile_definitions(PluginLifecycleTests PRIVATE
   NO_IGRAPHICS
+  PLUG_HAS_UI=0
   SAMPLE_TYPE_FLOAT)
 target_compile_features(PluginLifecycleTests PRIVATE cxx_std_17)
 target_compile_options(PluginLifecycleTests PRIVATE
@@ -85,8 +83,30 @@ set(DOPPELBANGER_VST3_BUNDLE
   "${CMAKE_BINARY_DIR}/artefacts/Release/VST3/Doppelbanger.vst3")
 set(DOPPELBANGER_VST3_BINARY_DIR
   "${DOPPELBANGER_VST3_BUNDLE}/Contents/x86_64-win")
-file(MAKE_DIRECTORY
-  "${DOPPELBANGER_VST3_BUNDLE}/Contents/Resources")
+set(DOPPELBANGER_VST3_WEB_DIR
+  "${DOPPELBANGER_VST3_BUNDLE}/Contents/Resources/web")
+set(DOPPELBANGER_UI_DIR "${CMAKE_SOURCE_DIR}/plugin/ui")
+set(DOPPELBANGER_UI_DIST_DIR "${DOPPELBANGER_UI_DIR}/dist")
+set(DOPPELBANGER_UI_INDEX "${DOPPELBANGER_UI_DIST_DIR}/index.html")
+find_program(DOPPELBANGER_NODE_EXECUTABLE NAMES node.exe node REQUIRED)
+find_program(DOPPELBANGER_NPM_EXECUTABLE NAMES npm.cmd npm REQUIRED)
+file(GLOB_RECURSE DOPPELBANGER_UI_SOURCES CONFIGURE_DEPENDS
+  "${DOPPELBANGER_UI_DIR}/src/*")
+set(DOPPELBANGER_UI_INPUTS
+  ${DOPPELBANGER_UI_SOURCES}
+  "${DOPPELBANGER_UI_DIR}/index.html"
+  "${DOPPELBANGER_UI_DIR}/package.json"
+  "${DOPPELBANGER_UI_DIR}/package-lock.json"
+  "${DOPPELBANGER_UI_DIR}/vite.config.ts")
+add_custom_command(
+  OUTPUT "${DOPPELBANGER_UI_INDEX}"
+  COMMAND "${CMAKE_COMMAND}" -E env "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1"
+    "${DOPPELBANGER_NPM_EXECUTABLE}" ci --no-audit --no-fund
+  COMMAND "${DOPPELBANGER_NPM_EXECUTABLE}" run build
+  WORKING_DIRECTORY "${DOPPELBANGER_UI_DIR}"
+  DEPENDS ${DOPPELBANGER_UI_INPUTS}
+  VERBATIM)
+add_custom_target(doppelbanger_ui_dist DEPENDS "${DOPPELBANGER_UI_INDEX}")
 
 add_library(Doppelbanger-vst3 MODULE
   plugin/Doppelbanger.cpp
@@ -101,18 +121,36 @@ target_include_directories(Doppelbanger-vst3 PRIVATE
   "${CMAKE_SOURCE_DIR}/plugin"
   "${CMAKE_SOURCE_DIR}/third_party/iPlug2/Dependencies/Extras")
 target_compile_definitions(Doppelbanger-vst3 PRIVATE
+  WEBVIEW_EDITOR_DELEGATE
   NO_IGRAPHICS
+  IDLE_TIMER_RATE=50
   SAMPLE_TYPE_FLOAT)
 target_compile_features(Doppelbanger-vst3 PRIVATE cxx_std_17)
 target_compile_options(Doppelbanger-vst3 PRIVATE
-  /W4 /WX /EHsc /wd4100 /wd4456 /wd4701)
+  /W4 /WX /EHsc /wd4100 /wd4456 /wd4458 /wd4701)
 target_link_libraries(Doppelbanger-vst3 PRIVATE
   iPlug2::VST3
+  iPlug2::WebView
   doppelbanger_rust)
-add_dependencies(Doppelbanger-vst3 doppelbanger_rust)
+add_dependencies(Doppelbanger-vst3 doppelbanger_rust doppelbanger_ui_dist)
 set_target_properties(Doppelbanger-vst3 PROPERTIES
   OUTPUT_NAME "Doppelbanger"
   PREFIX ""
   SUFFIX ".vst3"
   LIBRARY_OUTPUT_DIRECTORY "${DOPPELBANGER_VST3_BINARY_DIR}"
   RUNTIME_OUTPUT_DIRECTORY "${DOPPELBANGER_VST3_BINARY_DIR}")
+add_custom_command(TARGET Doppelbanger-vst3 POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E rm -rf "${DOPPELBANGER_VST3_WEB_DIR}"
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${DOPPELBANGER_VST3_WEB_DIR}"
+  COMMAND "${CMAKE_COMMAND}" -E copy_directory
+    "${DOPPELBANGER_UI_DIST_DIR}" "${DOPPELBANGER_VST3_WEB_DIR}"
+  VERBATIM)
+
+find_program(DOPPELBANGER_POWERSHELL_EXECUTABLE NAMES powershell.exe powershell REQUIRED)
+add_test(NAME WebViewBuildContract
+  COMMAND "${DOPPELBANGER_POWERSHELL_EXECUTABLE}" -NoProfile -File
+    "${CMAKE_SOURCE_DIR}/tests/tooling/webview_build_contract.ps1")
+add_test(NAME WebAssetContract
+  COMMAND "${DOPPELBANGER_POWERSHELL_EXECUTABLE}" -NoProfile -File
+    "${CMAKE_SOURCE_DIR}/tests/tooling/web_asset_contract.ps1"
+    -WebRoot "${DOPPELBANGER_VST3_WEB_DIR}")

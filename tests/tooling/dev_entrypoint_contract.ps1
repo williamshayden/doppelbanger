@@ -561,7 +561,14 @@ Assert-ArgumentVector $configureCmakeInvocations[1] $validatorConfigureArguments
 $buildResult = Invoke-DevFixture -Task build
 $buildCmakeInvocations = @($buildResult.Invocations | Where-Object { $_.Path.EndsWith('cmake.exe', [StringComparison]::OrdinalIgnoreCase) })
 $buildCtestInvocations = @($buildResult.Invocations | Where-Object { $_.Path.EndsWith('ctest.exe', [StringComparison]::OrdinalIgnoreCase) })
+$buildNpmInvocations = @($buildResult.Invocations | Where-Object { $_.Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) })
 Assert-True ([string]::IsNullOrEmpty($buildResult.Error)) 'build succeeds with checked native tools'
+Assert-Equal $buildNpmInvocations.Count 3 'build verifies npm and builds the frontend before native targets'
+Assert-ArgumentVector $buildNpmInvocations[1] @('ci', '--no-audit', '--no-fund') 'build installs the locked frontend dependencies without audit or funding network work'
+Assert-ArgumentVector $buildNpmInvocations[2] @('run', 'build') 'build creates the production frontend before the module build'
+Assert-Equal $buildNpmInvocations[1].WorkingDirectory (Join-Path $repoRoot 'plugin\ui') 'build installs the frontend from plugin/ui'
+Assert-Equal $buildNpmInvocations[2].WorkingDirectory (Join-Path $repoRoot 'plugin\ui') 'build builds the frontend from plugin/ui'
+Assert-Equal $buildNpmInvocations[1].PlaywrightSkipBrowserDownload '1' 'build suppresses Playwright browser downloads during npm ci'
 Assert-Equal $buildCmakeInvocations.Count 2 'build builds the product preset and validator target'
 Assert-ArgumentVector $buildCmakeInvocations[0] @('--build', '--preset', $releasePreset) 'build uses the committed Release product preset'
 Assert-ArgumentVector $buildCmakeInvocations[1] @('--build', $validatorBuildTree, '--target', 'validator') 'build only builds the pinned validator target'
@@ -571,12 +578,18 @@ Assert-ArgumentVector $buildCtestInvocations[0] @('--preset', $releasePreset) 'b
 $validateResult = Invoke-DevFixture -Task validate
 $validatePowerShellInvocations = @($validateResult.Invocations | Where-Object { $_.Path.EndsWith('powershell.exe', [StringComparison]::OrdinalIgnoreCase) })
 $expectedWrapperPath = Join-Path $repoRoot 'tests\plugin\validate_vst3.ps1'
+$expectedAssetContractPath = Join-Path $repoRoot 'tests\tooling\web_asset_contract.ps1'
 $expectedValidatorPath = Join-Path $repoRoot 'build\windows-vst3-validator\bin\validator.exe'
 $expectedPluginPath = Join-Path $repoRoot 'build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3'
+$expectedWebRoot = Join-Path $expectedPluginPath 'Contents\Resources\web'
 $expectedEvidencePath = Join-Path $repoRoot 'var\validation\native-foundation'
 Assert-True ([string]::IsNullOrEmpty($validateResult.Error)) 'validate succeeds with checked native tools'
-Assert-Equal $validatePowerShellInvocations.Count 1 'validate invokes the tracked wrapper through checked native PowerShell'
+Assert-Equal $validatePowerShellInvocations.Count 2 'validate checks packaged web assets before invoking the tracked validator wrapper'
 Assert-ArgumentVector $validatePowerShellInvocations[0] @(
+    '-NoProfile', '-File', $expectedAssetContractPath,
+    '-WebRoot', $expectedWebRoot
+) 'validate checks the exact packaged VST3 web root before validator launch'
+Assert-ArgumentVector $validatePowerShellInvocations[1] @(
     '-NoProfile', '-File', $expectedWrapperPath,
     '-ValidatorPath', $expectedValidatorPath,
     '-PluginPath', $expectedPluginPath,

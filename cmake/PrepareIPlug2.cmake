@@ -163,7 +163,8 @@ function(doppelbanger_prepare_iplug2 output_variable)
     IGraphics
     WDL
     Dependencies/IPlug
-    Dependencies/IGraphics)
+    Dependencies/IGraphics
+    Dependencies/Extras/nlohmann)
   set(vst3sdk_paths
     base
     cmake

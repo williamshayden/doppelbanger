@@ -26,10 +26,12 @@
 #define PLUG_DOES_MIDI_OUT 0
 #define PLUG_DOES_MPE 0
 #define PLUG_DOES_STATE_CHUNKS 1
-#define PLUG_HAS_UI 0
-#define PLUG_WIDTH 1
-#define PLUG_HEIGHT 1
-#define PLUG_FPS 1
+#ifndef PLUG_HAS_UI
+#define PLUG_HAS_UI 1
+#endif
+#define PLUG_WIDTH 760
+#define PLUG_HEIGHT 500
+#define PLUG_FPS 30
 #define PLUG_SHARED_RESOURCES 0
 #define PLUG_HOST_RESIZE 0
 
