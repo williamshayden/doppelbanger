@@ -44,7 +44,7 @@ function isParameter(value: unknown): value is EditorParameter {
     hasOnlyKeys(value, ["id", "normalized", "display"]) &&
     typeof value.id === "number" && Number.isInteger(value.id) && parameterIds.has(value.id) &&
     typeof value.normalized === "number" && Number.isFinite(value.normalized) && value.normalized >= 0 && value.normalized <= 1 &&
-    typeof value.display === "number" && Number.isFinite(value.display);
+    typeof value.display === "number" && Number.isFinite(value.display) && value.display >= -120 && value.display <= 120;
 }
 
 function clampNormalized(value: number): number {
@@ -137,7 +137,7 @@ export class EditorBridge {
       hasOnlyKeys(payload, ["parameters", "bypass", "build", "dsp_ready", "runtime_mode"]) &&
       Array.isArray(payload.parameters) && payload.parameters.length === 4 && payload.parameters.every(isParameter) &&
       new Set(payload.parameters.map((parameter) => parameter.id)).size === 4 &&
-      typeof payload.bypass === "boolean" && typeof payload.build === "string" &&
+      typeof payload.bypass === "boolean" && typeof payload.build === "string" && payload.build.length >= 1 && payload.build.length <= 32 &&
       typeof payload.dsp_ready === "boolean" && payload.runtime_mode === "LOCAL") {
       this.state = {
         parameters: [...payload.parameters].sort((left, right) => left.id - right.id) as EditorParameter[],

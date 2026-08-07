@@ -95,6 +95,66 @@ describe("EditorBridge", () => {
     unsubscribe();
   });
 
+  it("mirrors native parameter, bypass, and compatibility envelopes", () => {
+    window.IPlugSendMsg = () => undefined;
+    const bridge = new EditorBridge();
+    const states: Array<{ parameter: number; bypass: boolean; error?: string }> = [];
+    const unsubscribe = bridge.subscribe((state) => states.push({
+      parameter: state.parameters[2].display,
+      bypass: state.bypass,
+      error: state.error
+    }));
+
+    window.__doppelbangerReceive?.("{\"version\":1,\"type\":\"parameter.changed\",\"payload\":{\"id\":2,\"normalized\":0.25,\"display\":-6}}");
+    window.__doppelbangerReceive?.("{\"version\":1,\"type\":\"bypass.changed\",\"payload\":{\"value\":true}}");
+    window.__doppelbangerReceive?.("{\"version\":1,\"type\":\"compatibility.error\",\"payload\":{\"code\":\"DBUI_NATIVE_VERSION\"}}");
+
+    expect(states).toContainEqual({ parameter: -6, bypass: false, error: undefined });
+    expect(states).toContainEqual({ parameter: -6, bypass: true, error: undefined });
+    expect(states.at(-1)).toEqual({ parameter: -6, bypass: true, error: "DBUI_NATIVE_VERSION" });
+    unsubscribe();
+  });
+
+  it("rejects native snapshot display and build values outside the schema bounds", () => {
+    window.IPlugSendMsg = () => undefined;
+    const bridge = new EditorBridge();
+    const errors: string[] = [];
+    const unsubscribe = bridge.subscribe((state) => {
+      if (state.error) {
+        errors.push(state.error);
+      }
+    });
+    const snapshot = (display: number, build: string) => JSON.stringify({
+      version: 1,
+      type: "state.snapshot",
+      payload: {
+        parameters: [
+          { id: 0, normalized: 0.5, display },
+          { id: 1, normalized: 0.5, display: 0 },
+          { id: 2, normalized: 0.5, display: 0 },
+          { id: 3, normalized: 0.5, display: 0 }
+        ],
+        bypass: false,
+        build,
+        dsp_ready: true,
+        runtime_mode: "LOCAL"
+      }
+    });
+
+    window.__doppelbangerReceive?.(snapshot(-120.01, "1.0.0"));
+    window.__doppelbangerReceive?.(snapshot(120.01, "1.0.0"));
+    window.__doppelbangerReceive?.(snapshot(0, ""));
+    window.__doppelbangerReceive?.(snapshot(0, "123456789012345678901234567890123"));
+
+    expect(errors).toEqual([
+      "DBUI_BRIDGE_MESSAGE",
+      "DBUI_BRIDGE_MESSAGE",
+      "DBUI_BRIDGE_MESSAGE",
+      "DBUI_BRIDGE_MESSAGE"
+    ]);
+    unsubscribe();
+  });
+
   it("removes the native callback after the last subscription and requests a fresh snapshot on recreation", () => {
     const sent: unknown[] = [];
     window.IPlugSendMsg = (message) => sent.push(JSON.parse(message));

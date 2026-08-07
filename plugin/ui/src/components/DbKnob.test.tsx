@@ -26,6 +26,8 @@ describe("DbKnob", () => {
     fireEvent.pointerUp(slider);
     fireEvent.keyDown(slider, { key: "ArrowUp" });
     fireEvent.change(slider, { target: { value: "0.8" } });
+    fireEvent.keyUp(slider, { key: "Shift" });
+    expect(calls).toEqual(["begin", "set:0.7", "end", "begin", "set:0.8"]);
     fireEvent.keyUp(slider, { key: "ArrowUp" });
     fireEvent.pointerDown(slider);
     fireEvent.pointerCancel(slider);

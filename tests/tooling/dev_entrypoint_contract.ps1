@@ -530,4 +530,9 @@ foreach ($forbidden in @(
     Assert-True ($source.IndexOf($forbidden, [StringComparison]::OrdinalIgnoreCase) -lt 0) "dispatcher contains no $forbidden operation"
 }
 
+$editorNpmrcPath = Join-Path $repoRoot 'plugin\ui\.npmrc'
+Assert-True (Test-Path -LiteralPath $editorNpmrcPath -PathType Leaf) 'editor npm policy is tracked before dependency lifecycle scripts run'
+$editorNpmrc = Get-Content -LiteralPath $editorNpmrcPath -Raw
+Assert-Contains $editorNpmrc 'ignore-scripts=true' 'editor npm policy suppresses Playwright browser downloads before lifecycle configuration runs'
+
 Write-Host "dev entrypoint contract passed ($script:passed assertions)."

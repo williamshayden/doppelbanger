@@ -16,6 +16,7 @@ export function formatDb(value: number): string {
 
 export function DbKnob({ label, normalized, display, onBegin, onSet, onEnd }: DbKnobProps) {
   const active = useRef(false);
+  const adjustmentKeys = ["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp", "Home", "End", "PageDown", "PageUp"];
   const begin = () => {
     if (!active.current) {
       active.current = true;
@@ -51,11 +52,15 @@ export function DbKnob({ label, normalized, display, onBegin, onSet, onEnd }: Db
         onBlur={end}
         onChange={(event) => onSet(Number(event.currentTarget.value))}
         onKeyDown={(event) => {
-          if (["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp", "Home", "End", "PageDown", "PageUp"].includes(event.key)) {
+          if (adjustmentKeys.includes(event.key)) {
             begin();
           }
         }}
-        onKeyUp={end}
+        onKeyUp={(event) => {
+          if (adjustmentKeys.includes(event.key)) {
+            end();
+          }
+        }}
         onPointerCancel={end}
         onPointerDown={begin}
         onPointerUp={end}
