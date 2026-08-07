@@ -6,6 +6,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <thread>
 
 namespace {
 
@@ -25,6 +26,39 @@ bool IsSupportedSampleRate(double sampleRate) noexcept {
 
 }  // namespace
 
+bool Doppelbanger::StateMailbox::TryPublish(const StatePacket& packet,
+                                            std::uint32_t attempts) noexcept {
+  for (std::uint32_t attempt = 0; attempt < attempts; ++attempt) {
+    std::uint32_t state = mState.load(std::memory_order_acquire);
+    if (state != kEmpty && state != kReady) {
+      continue;
+    }
+    if (!mState.compare_exchange_strong(state, kWriting, std::memory_order_acq_rel,
+                                        std::memory_order_acquire)) {
+      continue;
+    }
+    mPacket = packet;
+    mState.store(kReady, std::memory_order_release);
+    return true;
+  }
+  return false;
+}
+
+bool Doppelbanger::StateMailbox::TryConsume(StatePacket& packet,
+                                            std::uint32_t attempts) noexcept {
+  for (std::uint32_t attempt = 0; attempt < attempts; ++attempt) {
+    std::uint32_t expected = kReady;
+    if (!mState.compare_exchange_strong(expected, kReading, std::memory_order_acq_rel,
+                                        std::memory_order_acquire)) {
+      continue;
+    }
+    packet = mPacket;
+    mState.store(kEmpty, std::memory_order_release);
+    return true;
+  }
+  return false;
+}
+
 Doppelbanger::Doppelbanger(const iplug::InstanceInfo& info)
     : iplug::Plugin(info, iplug::MakeConfig(kNumParams, kNumPresets)),
       mPlan(DefaultPlan()) {
@@ -32,6 +66,7 @@ Doppelbanger::Doppelbanger(const iplug::InstanceInfo& info)
   GetParam(kMidEqParam)->InitDouble("Mid EQ", 0.0, -3.0, 3.0, 0.01, "dB");
   GetParam(kHighEqParam)->InitDouble("High EQ", 0.0, -3.0, 3.0, 0.01, "dB");
   GetParam(kOutputParam)->InitDouble("Output", 0.0, -12.0, 12.0, 0.01, "dB");
+  mUiStateCache.plan = mPlan;
 }
 
 Doppelbanger::~Doppelbanger() { DestroyProcessor(); }
@@ -39,8 +74,8 @@ Doppelbanger::~Doppelbanger() { DestroyProcessor(); }
 bool Doppelbanger::SerializeState(iplug::IByteChunk& chunk) const {
   try {
     doppelbanger::state::EncodedStateV1 encoded{};
-    const db_runtime_plan_v1 plan = PlanFromParameters();
-    if (doppelbanger::state::EncodeStateV1(plan, encoded) !=
+    const StatePacket state = CurrentStateForUi();
+    if (doppelbanger::state::EncodeStateV1(state.plan, encoded) !=
         doppelbanger::state::StateCodecStatus::kOk) {
       return false;
     }
@@ -72,16 +107,18 @@ int Doppelbanger::UnserializeState(const iplug::IByteChunk& chunk, int startPos)
         doppelbanger::state::StateCodecStatus::kOk) {
       return -1;
     }
-    if (mActive && !ReplaceProcessor(decoded)) {
+
+    std::int32_t savedBypass = CurrentStateForUi().hostBypass;
+    if (remaining == vst3StateSize) {
+      std::memcpy(&savedBypass, chunk.GetData() + startPos + codecSize,
+                  sizeof(savedBypass));
+      if (savedBypass != 0 && savedBypass != 1) {
+        return -1;
+      }
+    }
+    if (!QueueStateFromUi(decoded, savedBypass)) {
       return -1;
     }
-
-    mPlan = decoded;
-    GetParam(kLowEqParam)->Set(decoded.eq_gains_db[0]);
-    GetParam(kMidEqParam)->Set(decoded.eq_gains_db[1]);
-    GetParam(kHighEqParam)->Set(decoded.eq_gains_db[2]);
-    GetParam(kOutputParam)->Set(decoded.applied_gain_db);
-    mParametersDirty = false;
     return startPos + codecSize;
   } catch (...) {
     return -1;
@@ -91,16 +128,23 @@ int Doppelbanger::UnserializeState(const iplug::IByteChunk& chunk, int startPos)
 void Doppelbanger::OnActivate(bool active) {
   try {
     if (!active) {
-      mActive = false;
+      StatePacket state = CurrentStateForUi();
+      if (mAudioStateGeneration >= state.generation) {
+        state = StatePacket{PlanFromParameters(mPlan), GetBypassed() ? 1 : 0,
+                            mAudioStateGeneration};
+      }
+      mUiStateCache = state;
       DestroyProcessor();
       return;
     }
-    mActive = true;
-    if (!ReplaceProcessor(PlanFromParameters())) {
+    const StatePacket state = CurrentStateForUi();
+    if (!ReplaceProcessor(state.plan)) {
       DestroyProcessor();
+      return;
     }
+    mAudioStateGeneration = state.generation;
+    SetBypassed(state.hostBypass != 0);
   } catch (...) {
-    mActive = active;
     DestroyProcessor();
   }
 }
@@ -114,7 +158,7 @@ void Doppelbanger::OnReset() {
     const auto maxBlockFrames = static_cast<std::uint32_t>(GetBlockSize());
     if (sampleRate != mProcessorSampleRate ||
         maxBlockFrames != mProcessorMaxBlockFrames) {
-      if (!ReplaceProcessor(PlanFromParameters())) {
+      if (!ReplaceProcessor(PlanFromParameters(mPlan))) {
         DestroyProcessor();
       }
       return;
@@ -198,17 +242,23 @@ Steinberg::tresult PLUGIN_API Doppelbanger::process(Steinberg::Vst::ProcessData&
     if (data.symbolicSampleSize != Steinberg::Vst::kSample32 || data.numSamples < 0 ||
         data.numSamples > static_cast<Steinberg::int32>(DB_MAX_BLOCK_FRAMES) ||
         data.numSamples > static_cast<Steinberg::int32>(mProcessorMaxBlockFrames)) {
+      SilenceProcessData(data);
       return Steinberg::kResultFalse;
     }
-    if (data.numSamples == 0) {
-      return iplug::Plugin::process(data);
-    }
-    if (data.numInputs != 1 || data.numOutputs != 1 || data.inputs == nullptr ||
-        data.outputs == nullptr || data.inputs[0].numChannels != 2 ||
-        data.outputs[0].numChannels != 2) {
+    if (data.numSamples > 0 &&
+        (data.numInputs != 1 || data.numOutputs != 1 || data.inputs == nullptr ||
+         data.outputs == nullptr || data.inputs[0].numChannels != 2 ||
+         data.outputs[0].numChannels != 2)) {
+      SilenceProcessData(data);
       return Steinberg::kResultFalse;
     }
-    return iplug::Plugin::process(data);
+    if (!ApplyPendingState()) {
+      SilenceProcessData(data);
+      return Steinberg::kResultFalse;
+    }
+    const Steinberg::tresult result = iplug::Plugin::process(data);
+    PublishAudioState();
+    return result;
   } catch (...) {
     SilenceProcessData(data);
     return Steinberg::kResultFalse;
@@ -257,17 +307,10 @@ Steinberg::tresult PLUGIN_API Doppelbanger::setState(Steinberg::IBStream* state)
     if (savedBypass != 0 && savedBypass != 1) {
       return Steinberg::kResultFalse;
     }
-    if (mActive && !ReplaceProcessor(decoded)) {
+    if (!QueueStateFromUi(decoded, savedBypass)) {
       return Steinberg::kResultFalse;
     }
 
-    mPlan = decoded;
-    GetParam(kLowEqParam)->Set(decoded.eq_gains_db[0]);
-    GetParam(kMidEqParam)->Set(decoded.eq_gains_db[1]);
-    GetParam(kHighEqParam)->Set(decoded.eq_gains_db[2]);
-    GetParam(kOutputParam)->Set(decoded.applied_gain_db);
-    mParametersDirty = false;
-    SetBypassed(savedBypass != 0);
     iplug::IPlugVST3ControllerBase::UpdateParams(this, savedBypass);
     OnRestoreState();
     return Steinberg::kResultOk;
@@ -276,8 +319,44 @@ Steinberg::tresult PLUGIN_API Doppelbanger::setState(Steinberg::IBStream* state)
   }
 }
 
-db_runtime_plan_v1 Doppelbanger::PlanFromParameters() const noexcept {
-  db_runtime_plan_v1 plan = mPlan;
+Steinberg::tresult PLUGIN_API Doppelbanger::getState(Steinberg::IBStream* state) {
+  try {
+    if (state == nullptr) {
+      return Steinberg::kResultFalse;
+    }
+
+    const StatePacket snapshot = CurrentStateForUi();
+    doppelbanger::state::EncodedStateV1 encoded{};
+    if (doppelbanger::state::EncodeStateV1(snapshot.plan, encoded) !=
+            doppelbanger::state::StateCodecStatus::kOk ||
+        (snapshot.hostBypass != 0 && snapshot.hostBypass != 1)) {
+      return Steinberg::kResultFalse;
+    }
+
+    constexpr std::size_t kVst3StateSize =
+        doppelbanger::state::kEncodedStateV1Size + sizeof(std::int32_t);
+    std::array<std::uint8_t, kVst3StateSize> bytes{};
+    std::copy(encoded.begin(), encoded.end(), bytes.begin());
+    std::memcpy(bytes.data() + encoded.size(), &snapshot.hostBypass,
+                sizeof(snapshot.hostBypass));
+
+    Steinberg::int32 bytesWritten = 0;
+    const Steinberg::tresult result =
+        state->write(bytes.data(), static_cast<Steinberg::int32>(bytes.size()),
+                     &bytesWritten);
+    if (result != Steinberg::kResultOk ||
+        bytesWritten != static_cast<Steinberg::int32>(bytes.size())) {
+      return Steinberg::kResultFalse;
+    }
+    return Steinberg::kResultOk;
+  } catch (...) {
+    return Steinberg::kResultFalse;
+  }
+}
+
+db_runtime_plan_v1 Doppelbanger::PlanFromParameters(
+    const db_runtime_plan_v1& base) const noexcept {
+  db_runtime_plan_v1 plan = base;
   const std::array<double, 3> eq{
       GetParam(kLowEqParam)->Value(),
       GetParam(kMidEqParam)->Value(),
@@ -291,6 +370,76 @@ db_runtime_plan_v1 Doppelbanger::PlanFromParameters() const noexcept {
   plan.applied_gain_db = output;
   std::copy(eq.begin(), eq.end(), plan.eq_gains_db);
   return plan;
+}
+
+Doppelbanger::StatePacket Doppelbanger::CurrentStateForUi() const {
+  StatePacket published{};
+  for (std::uint32_t attempt = 0; attempt < 64; ++attempt) {
+    if (!mPublishedState.TryConsume(published, 1)) {
+      continue;
+    }
+    if (published.generation >= mUiStateCache.generation) {
+      mUiStateCache = published;
+    }
+    break;
+  }
+
+  StatePacket state = mUiStateCache;
+  state.plan = PlanFromParameters(state.plan);
+  mUiStateCache.plan = state.plan;
+  return state;
+}
+
+bool Doppelbanger::QueueStateFromUi(const db_runtime_plan_v1& plan,
+                                    std::int32_t hostBypass) noexcept {
+  if (!doppelbanger::state::IsValidPlanV1(plan) ||
+      (hostBypass != 0 && hostBypass != 1)) {
+    return false;
+  }
+
+  StatePacket pending{plan, hostBypass, mNextStateGeneration};
+  bool published = false;
+  for (std::uint32_t attempt = 0; attempt < 64 && !published; ++attempt) {
+    published = mPendingState.TryPublish(pending, 1);
+    if (!published) {
+      std::this_thread::yield();
+    }
+  }
+  if (!published) {
+    return false;
+  }
+
+  GetParam(kLowEqParam)->Set(plan.eq_gains_db[0]);
+  GetParam(kMidEqParam)->Set(plan.eq_gains_db[1]);
+  GetParam(kHighEqParam)->Set(plan.eq_gains_db[2]);
+  GetParam(kOutputParam)->Set(plan.applied_gain_db);
+  mUiStateCache = pending;
+  ++mNextStateGeneration;
+  return true;
+}
+
+bool Doppelbanger::ApplyPendingState() noexcept {
+  StatePacket pending{};
+  if (!mPendingState.TryConsume(pending, 1)) {
+    return true;
+  }
+  if (mProcessor == nullptr ||
+      db_processor_set_plan_v1(mProcessor, &pending.plan) != DB_STATUS_OK ||
+      db_processor_reset(mProcessor) != DB_STATUS_OK) {
+    return false;
+  }
+
+  mPlan = pending.plan;
+  mParametersDirty = false;
+  mAudioStateGeneration = pending.generation;
+  SetBypassed(pending.hostBypass != 0);
+  return true;
+}
+
+void Doppelbanger::PublishAudioState() noexcept {
+  const StatePacket state{PlanFromParameters(mPlan), GetBypassed() ? 1 : 0,
+                          mAudioStateGeneration};
+  static_cast<void>(mPublishedState.TryPublish(state, 1));
 }
 
 bool Doppelbanger::ReplaceProcessor(const db_runtime_plan_v1& plan) noexcept {
@@ -331,7 +480,7 @@ bool Doppelbanger::ApplyParameterPlan() noexcept {
   if (!mParametersDirty) {
     return mProcessor != nullptr;
   }
-  const db_runtime_plan_v1 plan = PlanFromParameters();
+  const db_runtime_plan_v1 plan = PlanFromParameters(mPlan);
   if (!doppelbanger::state::IsValidPlanV1(plan) || mProcessor == nullptr ||
       db_processor_set_plan_v1(mProcessor, &plan) != DB_STATUS_OK) {
     return false;
@@ -364,15 +513,31 @@ void Doppelbanger::Silence(iplug::sample** outputs, int nFrames) noexcept {
 }
 
 void Doppelbanger::SilenceProcessData(Steinberg::Vst::ProcessData& data) noexcept {
-  if (data.symbolicSampleSize != Steinberg::Vst::kSample32 || data.numSamples <= 0 ||
+  if (data.numSamples <= 0 ||
       data.numSamples > static_cast<Steinberg::int32>(DB_MAX_BLOCK_FRAMES) ||
-      data.numOutputs != 1 || data.outputs == nullptr ||
-      data.outputs[0].numChannels != 2 || data.outputs[0].channelBuffers32 == nullptr) {
+      data.numOutputs < 1 || data.outputs == nullptr) {
     return;
   }
-  for (int channel = 0; channel < 2; ++channel) {
-    if (data.outputs[0].channelBuffers32[channel] != nullptr) {
-      std::fill_n(data.outputs[0].channelBuffers32[channel], data.numSamples, 0.0F);
+
+  Steinberg::Vst::AudioBusBuffers& output = data.outputs[0];
+  const int channels = std::clamp<Steinberg::int32>(output.numChannels, 0, 2);
+  Steinberg::uint64 silenceFlags = 0;
+  if (data.symbolicSampleSize == Steinberg::Vst::kSample32 &&
+      output.channelBuffers32 != nullptr) {
+    for (int channel = 0; channel < channels; ++channel) {
+      if (output.channelBuffers32[channel] != nullptr) {
+        std::fill_n(output.channelBuffers32[channel], data.numSamples, 0.0F);
+        silenceFlags |= Steinberg::uint64{1} << channel;
+      }
+    }
+  } else if (data.symbolicSampleSize == Steinberg::Vst::kSample64 &&
+             output.channelBuffers64 != nullptr) {
+    for (int channel = 0; channel < channels; ++channel) {
+      if (output.channelBuffers64[channel] != nullptr) {
+        std::fill_n(output.channelBuffers64[channel], data.numSamples, 0.0);
+        silenceFlags |= Steinberg::uint64{1} << channel;
+      }
     }
   }
+  output.silenceFlags |= silenceFlags;
 }

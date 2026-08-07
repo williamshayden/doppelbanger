@@ -8,11 +8,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -48,6 +51,11 @@ bool Near(float actual, float expected, float tolerance = 1.0e-6F) {
   return std::abs(actual - expected) <= tolerance;
 }
 
+bool IsSilent(const std::vector<Sample32>& samples) {
+  return std::all_of(samples.begin(), samples.end(),
+                     [](Sample32 sample) { return sample == 0.0F; });
+}
+
 struct AudioBlock {
   explicit AudioBlock(int frames)
       : inputLeft(static_cast<std::size_t>(frames)),
@@ -72,6 +80,37 @@ struct AudioBlock {
   std::array<Sample32*, 2> outputChannels{};
   AudioBusBuffers input{};
   AudioBusBuffers output{};
+};
+
+class ControlledWriteStream final : public MemoryStream {
+ public:
+  enum class Behavior {
+    kShortWrite,
+    kFailure,
+    kThrow,
+  };
+
+  explicit ControlledWriteStream(Behavior behavior) : behavior(behavior) {}
+
+  Steinberg::tresult PLUGIN_API write(void* buffer,
+                                      Steinberg::int32 numBytes,
+                                      Steinberg::int32* numBytesWritten) override {
+    if (behavior == Behavior::kThrow) {
+      throw std::runtime_error("simulated stream exception");
+    }
+    if (behavior == Behavior::kFailure) {
+      if (numBytesWritten != nullptr) {
+        *numBytesWritten = 0;
+      }
+      return kResultFalse;
+    }
+
+    const Steinberg::int32 shortCount = std::max<Steinberg::int32>(0, numBytes - 1);
+    return MemoryStream::write(buffer, shortCount, numBytesWritten);
+  }
+
+ private:
+  Behavior behavior;
 };
 
 class HostedInstance {
@@ -292,6 +331,58 @@ bool RestoreState(Doppelbanger& plugin, std::vector<char>& bytes) {
   return plugin.setState(&stream) == kResultOk;
 }
 
+bool HasValidFixedState(const std::vector<char>& bytes) {
+  constexpr std::size_t kVst3StateSize =
+      doppelbanger::state::kEncodedStateV1Size + sizeof(std::int32_t);
+  if (bytes.size() != kVst3StateSize) {
+    return false;
+  }
+
+  db_runtime_plan_v1 decoded{};
+  if (doppelbanger::state::DecodeStateV1(
+          reinterpret_cast<const std::uint8_t*>(bytes.data()),
+          doppelbanger::state::kEncodedStateV1Size, decoded) !=
+      doppelbanger::state::StateCodecStatus::kOk) {
+    return false;
+  }
+
+  std::int32_t bypass = -1;
+  std::memcpy(&bypass, bytes.data() + doppelbanger::state::kEncodedStateV1Size,
+              sizeof(bypass));
+  return bypass == 0 || bypass == 1;
+}
+
+void SettlePlanAndReset(HostedInstance& hosted) {
+  AudioBlock settling(512);
+  Expect(hosted.Process(settling) == kResultOk, "restored plan settles for one bounded block");
+  hosted.Reset();
+}
+
+void StateWriteFailuresAreContained() {
+  HostedInstance hosted;
+  Expect(hosted.Initialize(64), "state-write fixture activates");
+  Expect(hosted.plugin.getState(nullptr) == kResultFalse,
+         "null state output stream is rejected");
+
+  for (const auto behavior : {ControlledWriteStream::Behavior::kShortWrite,
+                              ControlledWriteStream::Behavior::kFailure}) {
+    ControlledWriteStream stream(behavior);
+    Expect(hosted.plugin.getState(&stream) == kResultFalse,
+           "short or failed state writes propagate failure");
+  }
+
+  ControlledWriteStream throwing(ControlledWriteStream::Behavior::kThrow);
+  bool escaped = false;
+  Steinberg::tresult result = kResultTrue;
+  try {
+    result = hosted.plugin.getState(&throwing);
+  } catch (...) {
+    escaped = true;
+  }
+  Expect(!escaped, "state stream exceptions cannot cross the host boundary");
+  Expect(result == kResultFalse, "state stream exceptions report failure");
+}
+
 void StateRecreateCorruptionResetAndDestruction() {
   HostedInstance original;
   Expect(original.Initialize(512), "original component activates");
@@ -309,6 +400,7 @@ void StateRecreateCorruptionResetAndDestruction() {
   std::vector<char> state = SaveState(original.plugin);
   Expect(state.size() == doppelbanger::state::kEncodedStateV1Size + sizeof(std::int32_t),
          "VST3 state contains fixed codec bytes and iPlug2 host bypass");
+  Expect(HasValidFixedState(state), "saved VST3 state has valid fixed framing");
 
   HostedInstance restored;
   Expect(restored.Initialize(512), "replacement component activates");
@@ -319,8 +411,8 @@ void StateRecreateCorruptionResetAndDestruction() {
              restored.plugin.GetParam(kOutputParam)->Value() == 6.0,
          "restore reproduces every parameter value");
 
-  original.Reset();
-  restored.Reset();
+  SettlePlanAndReset(original);
+  SettlePlanAndReset(restored);
   AudioBlock originalImpulse(512);
   AudioBlock restoredImpulse(512);
   originalImpulse.inputLeft[0] = restoredImpulse.inputLeft[0] = 0.75F;
@@ -351,6 +443,10 @@ void StateRecreateCorruptionResetAndDestruction() {
   Expect(bounded.Initialize(64), "small-block component activates");
   AudioBlock tooLarge(65);
   Expect(bounded.Process(tooLarge) == kResultFalse, "oversized process block is rejected");
+  Expect(IsSilent(tooLarge.outputLeft) && IsSilent(tooLarge.outputRight),
+         "rejected bounded process output is silenced");
+  Expect(tooLarge.output.silenceFlags == 0x3ULL,
+         "rejected stereo output reports both channels silent");
 
   {
     HostedInstance noEditor;
@@ -360,12 +456,166 @@ void StateRecreateCorruptionResetAndDestruction() {
   }
 }
 
+void BypassAndMalformedVst3StateAreHandledAtomically() {
+  HostedInstance source;
+  Expect(source.Initialize(64), "bypass state source activates");
+
+  ParameterChanges bypassOn(1);
+  AddAutomationPoint(bypassOn, iplug::kBypassParam, 1.0);
+  AudioBlock bypassSource(32);
+  bypassSource.inputLeft[0] = 0.625F;
+  bypassSource.inputRight[0] = -0.375F;
+  Expect(source.Process(bypassSource, &bypassOn) == kResultOk,
+         "bypass state source processes");
+
+  std::vector<char> bypassState = SaveState(source.plugin);
+  Expect(HasValidFixedState(bypassState), "bypass-on state keeps fixed framing");
+  std::int32_t savedBypass = 0;
+  std::memcpy(&savedBypass,
+              bypassState.data() + doppelbanger::state::kEncodedStateV1Size,
+              sizeof(savedBypass));
+  Expect(savedBypass == 1, "bypass-on state records the host bypass value");
+
+  HostedInstance restored;
+  Expect(restored.Initialize(64), "bypass state replacement activates");
+  Expect(RestoreState(restored.plugin, bypassState), "bypass-on state restores");
+  AudioBlock bypassed(32);
+  bypassed.inputLeft[0] = 0.625F;
+  bypassed.inputRight[0] = -0.375F;
+  Expect(restored.Process(bypassed) == kResultOk, "restored bypass state processes");
+  Expect(restored.plugin.GetBypassed(), "restored host bypass is active");
+  Expect(bypassed.outputLeft == bypassed.inputLeft &&
+             bypassed.outputRight == bypassed.inputRight,
+         "restored host bypass remains sample exact");
+
+  std::vector<std::vector<char>> malformed;
+  malformed.push_back(bypassState);
+  const std::int32_t invalidBypass = 2;
+  std::memcpy(malformed.back().data() + doppelbanger::state::kEncodedStateV1Size,
+              &invalidBypass, sizeof(invalidBypass));
+  malformed.push_back(bypassState);
+  malformed.back().pop_back();
+  malformed.push_back(bypassState);
+  malformed.back().push_back(static_cast<char>(0x5A));
+
+  const double outputBefore = restored.plugin.GetParam(kOutputParam)->Value();
+  const bool bypassBefore = restored.plugin.GetBypassed();
+  for (auto& bytes : malformed) {
+    Expect(!RestoreState(restored.plugin, bytes),
+           "invalid bypass, truncation, and trailing bytes are rejected");
+    Expect(restored.plugin.GetParam(kOutputParam)->Value() == outputBefore,
+           "malformed VST3 state cannot mutate product parameters");
+    Expect(restored.plugin.GetBypassed() == bypassBefore,
+           "malformed VST3 state cannot mutate host bypass");
+  }
+}
+
+void ConcurrentStateAndProcessingRemainSafe() {
+  HostedInstance defaultSource;
+  Expect(defaultSource.Initialize(512), "default concurrent-state source activates");
+  std::vector<char> defaultState = SaveState(defaultSource.plugin);
+
+  HostedInstance shapedSource;
+  Expect(shapedSource.Initialize(512), "shaped concurrent-state source activates");
+  ParameterChanges automation(4);
+  AddAutomationPoint(automation, kLowEqParam, 5.0 / 6.0);
+  AddAutomationPoint(automation, kMidEqParam, 0.25);
+  AddAutomationPoint(automation, kHighEqParam, 0.625);
+  AddAutomationPoint(automation, kOutputParam, 0.75);
+  AudioBlock shapedRamp(512);
+  shapedRamp.inputLeft.assign(shapedRamp.inputLeft.size(), 0.1F);
+  shapedRamp.inputRight.assign(shapedRamp.inputRight.size(), -0.1F);
+  Expect(shapedSource.Process(shapedRamp, &automation) == kResultOk,
+         "shaped concurrent-state source reaches its plan");
+  std::vector<char> shapedState = SaveState(shapedSource.plugin);
+
+  HostedInstance hosted;
+  Expect(hosted.Initialize(512), "concurrent state/process component activates");
+  std::atomic<bool> start{false};
+  std::atomic<bool> audioOk{true};
+  std::atomic<bool> uiOk{true};
+
+  std::thread audio([&]() {
+    AudioBlock block(32);
+    block.inputLeft.assign(block.inputLeft.size(), 0.125F);
+    block.inputRight.assign(block.inputRight.size(), -0.125F);
+    while (!start.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+    for (int iteration = 0; iteration < 10'000; ++iteration) {
+      std::fill(block.outputLeft.begin(), block.outputLeft.end(), 99.0F);
+      std::fill(block.outputRight.begin(), block.outputRight.end(), 99.0F);
+      if (hosted.Process(block) != kResultOk ||
+          !std::all_of(block.outputLeft.begin(), block.outputLeft.end(),
+                       [](float sample) { return std::isfinite(sample); }) ||
+          !std::all_of(block.outputRight.begin(), block.outputRight.end(),
+                       [](float sample) { return std::isfinite(sample); })) {
+        audioOk.store(false, std::memory_order_release);
+        return;
+      }
+      if ((iteration & 31) == 0) {
+        std::this_thread::yield();
+      }
+    }
+  });
+
+  start.store(true, std::memory_order_release);
+  for (int iteration = 0; iteration < 1'000; ++iteration) {
+    std::vector<char> requested = (iteration & 1) == 0 ? defaultState : shapedState;
+    if (!RestoreState(hosted.plugin, requested)) {
+      uiOk.store(false, std::memory_order_release);
+      break;
+    }
+
+    MemoryStream stream;
+    if (hosted.plugin.getState(&stream) != kResultOk) {
+      uiOk.store(false, std::memory_order_release);
+      break;
+    }
+    const std::vector<char> saved(stream.getData(), stream.getData() + stream.getSize());
+    if (!HasValidFixedState(saved)) {
+      uiOk.store(false, std::memory_order_release);
+      break;
+    }
+    if ((iteration & 15) == 0) {
+      std::this_thread::yield();
+    }
+  }
+  audio.join();
+
+  Expect(audioOk.load(std::memory_order_acquire),
+         "concurrent state calls cannot corrupt finite audio processing");
+  Expect(uiOk.load(std::memory_order_acquire),
+         "concurrent state calls retain valid fixed state framing");
+
+  std::vector<char> finalState = shapedState;
+  Expect(RestoreState(hosted.plugin, finalState), "final concurrent state restores");
+  SettlePlanAndReset(hosted);
+
+  HostedInstance reference;
+  Expect(reference.Initialize(512), "final-state reference activates");
+  Expect(RestoreState(reference.plugin, finalState), "final-state reference restores");
+  SettlePlanAndReset(reference);
+
+  AudioBlock actual(512);
+  AudioBlock expected(512);
+  actual.inputLeft[0] = expected.inputLeft[0] = 0.75F;
+  actual.inputRight[0] = expected.inputRight[0] = -0.25F;
+  Expect(hosted.Process(actual) == kResultOk, "final concurrent state processes");
+  Expect(reference.Process(expected) == kResultOk, "final-state reference processes");
+  Expect(actual.outputLeft == expected.outputLeft && actual.outputRight == expected.outputRight,
+         "final concurrent restore is deterministic after quiescence");
+}
+
 }  // namespace
 
 int main() {
   ComponentIdentityAndFormatContract();
   SilenceImpulseAutomationAndBypass();
+  StateWriteFailuresAreContained();
   StateRecreateCorruptionResetAndDestruction();
+  BypassAndMalformedVst3StateAreHandledAtomically();
+  ConcurrentStateAndProcessingRemainSafe();
 
   if (gFailures != 0) {
     std::cerr << gFailures << " PluginLifecycle test assertion(s) failed\n";
