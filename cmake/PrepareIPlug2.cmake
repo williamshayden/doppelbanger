@@ -4,6 +4,95 @@ set(DOPPELBANGER_IPLUG2_SHA "5c2df9dce3f5258acfeff3846a6a9563f382212c")
 set(DOPPELBANGER_VST3SDK_SHA "58f8da7936800732561402d7936584ca4505de07")
 set(DOPPELBANGER_PREPARE_IPLUG2_MODULE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 
+function(doppelbanger_find_native_git output_variable)
+  if(NOT WIN32)
+    message(FATAL_ERROR "Pinned plugin dependencies require native Windows CMake")
+  endif()
+
+  set(program_files_git "$ENV{ProgramFiles}/Git/cmd/git.exe")
+  if(EXISTS "${program_files_git}")
+    set(native_git "${program_files_git}")
+  else()
+    find_program(native_git NAMES git.exe git REQUIRED)
+  endif()
+  set(${output_variable} "${native_git}" PARENT_SCOPE)
+endfunction()
+
+function(doppelbanger_require_pinned_checkout checkout_path expected_sha)
+  if(NOT EXISTS "${checkout_path}")
+    message(FATAL_ERROR "Pinned plugin dependency is missing: ${checkout_path}")
+  endif()
+  file(REAL_PATH "${checkout_path}" canonical_checkout_path)
+  doppelbanger_find_native_git(native_git)
+
+  execute_process(
+    COMMAND "${native_git}" -C "${canonical_checkout_path}" rev-parse HEAD
+    RESULT_VARIABLE revision_result
+    OUTPUT_VARIABLE actual_sha
+    ERROR_VARIABLE revision_error)
+  string(STRIP "${actual_sha}" actual_sha)
+  if(NOT revision_result EQUAL 0)
+    message(FATAL_ERROR
+      "Cannot read pinned plugin dependency revision: ${canonical_checkout_path}: "
+      "${revision_error}")
+  endif()
+  if(NOT actual_sha STREQUAL expected_sha)
+    message(FATAL_ERROR
+      "Pinned plugin dependency revision mismatch: ${canonical_checkout_path}: "
+      "expected ${expected_sha}, got ${actual_sha}")
+  endif()
+
+  execute_process(
+    COMMAND "${native_git}" -C "${canonical_checkout_path}"
+      status --porcelain --untracked-files=all
+    RESULT_VARIABLE cleanliness_result
+    OUTPUT_VARIABLE cleanliness_output
+    ERROR_VARIABLE cleanliness_error)
+  if(NOT cleanliness_result EQUAL 0)
+    message(FATAL_ERROR
+      "Cannot inspect pinned plugin dependency cleanliness: "
+      "${canonical_checkout_path}: ${cleanliness_error}")
+  endif()
+  if(NOT cleanliness_output STREQUAL "")
+    message(FATAL_ERROR
+      "Pinned plugin dependency is dirty: ${canonical_checkout_path}: "
+      "${cleanliness_output}")
+  endif()
+endfunction()
+
+function(doppelbanger_verify_pinned_dependencies source_root)
+  set(lock_file "${source_root}/tools/plugin-dependencies.lock.json")
+  if(NOT EXISTS "${lock_file}")
+    message(FATAL_ERROR "Pinned plugin dependency lock is missing: ${lock_file}")
+  endif()
+  file(READ "${lock_file}" lock_json)
+  string(JSON dependency_count LENGTH "${lock_json}" dependencies)
+  if(NOT dependency_count EQUAL 9)
+    message(FATAL_ERROR "Pinned plugin dependency lock must contain nine entries")
+  endif()
+
+  string(JSON locked_iplug2_path GET "${lock_json}" dependencies 0 path)
+  string(JSON locked_iplug2_sha GET "${lock_json}" dependencies 0 sha)
+  string(JSON locked_vst3sdk_path GET "${lock_json}" dependencies 1 path)
+  string(JSON locked_vst3sdk_sha GET "${lock_json}" dependencies 1 sha)
+  if(NOT locked_iplug2_path STREQUAL "third_party/iPlug2" OR
+     NOT locked_iplug2_sha STREQUAL DOPPELBANGER_IPLUG2_SHA OR
+     NOT locked_vst3sdk_path STREQUAL "third_party/vst3sdk" OR
+     NOT locked_vst3sdk_sha STREQUAL DOPPELBANGER_VST3SDK_SHA)
+    message(FATAL_ERROR "Pinned plugin dependency lock has unexpected top-level pins")
+  endif()
+
+  math(EXPR dependency_last_index "${dependency_count} - 1")
+  foreach(dependency_index RANGE 0 ${dependency_last_index})
+    string(JSON relative_path GET
+      "${lock_json}" dependencies ${dependency_index} path)
+    string(JSON expected_sha GET
+      "${lock_json}" dependencies ${dependency_index} sha)
+    doppelbanger_require_pinned_checkout(
+      "${source_root}/${relative_path}" "${expected_sha}")
+  endforeach()
+endfunction()
+
 function(doppelbanger_copy_pinned_path source_root relative_path destination_root)
   set(source_path "${source_root}/${relative_path}")
   if(NOT EXISTS "${source_path}")
@@ -49,6 +138,8 @@ function(doppelbanger_prepare_iplug2 output_variable)
   file(REAL_PATH "${source_root}/third_party/iPlug2" iplug2_source)
   file(REAL_PATH "${source_root}/third_party/vst3sdk" vst3sdk_source)
   file(REAL_PATH "${CMAKE_BINARY_DIR}" binary_root)
+
+  doppelbanger_verify_pinned_dependencies("${source_root}")
 
   foreach(required_path IN ITEMS "${iplug2_source}" "${vst3sdk_source}")
     if(NOT EXISTS "${required_path}")

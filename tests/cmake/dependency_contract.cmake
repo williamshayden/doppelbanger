@@ -251,6 +251,91 @@ reject_match("${prepare_iplug2}" "iPlug2 preparation must not write into source 
 reject_match("${prepare_iplug2}" "VST3 SDK preparation must not write into source submodules" "third_party[/\\]vst3sdk[^\r\n]*(write|remove|copy|make_directory)")
 
 include("${PREPARE_IPLUG2_FILE}")
+
+set(pin_probe_root "${PROJECT_ROOT}/build/dependency-contract-pin-probe")
+set(pin_probe_repo "${pin_probe_root}/checkout")
+file(REMOVE_RECURSE "${pin_probe_root}")
+file(MAKE_DIRECTORY "${pin_probe_repo}")
+foreach(git_arguments IN ITEMS
+    "init;--quiet"
+    "config;user.email;dependency-contract@invalid.example"
+    "config;user.name;Doppelbanger Dependency Contract")
+  execute_process(
+    COMMAND "${NATIVE_GIT}" -C "${pin_probe_repo}" ${git_arguments}
+    RESULT_VARIABLE pin_probe_git_result
+    OUTPUT_VARIABLE pin_probe_git_output
+    ERROR_VARIABLE pin_probe_git_error)
+  if(NOT pin_probe_git_result EQUAL 0)
+    message(FATAL_ERROR
+      "dependency contract: cannot create pinned-checkout probe: "
+      "${pin_probe_git_output}${pin_probe_git_error}")
+  endif()
+endforeach()
+file(WRITE "${pin_probe_repo}/tracked.txt" "pinned-checkout-probe\n")
+execute_process(
+  COMMAND "${NATIVE_GIT}" -C "${pin_probe_repo}" add tracked.txt
+  RESULT_VARIABLE pin_probe_add_result
+  ERROR_VARIABLE pin_probe_add_error)
+if(NOT pin_probe_add_result EQUAL 0)
+  message(FATAL_ERROR "dependency contract: cannot stage pin probe: ${pin_probe_add_error}")
+endif()
+execute_process(
+  COMMAND "${NATIVE_GIT}" -C "${pin_probe_repo}" commit --quiet -m "pin probe"
+  RESULT_VARIABLE pin_probe_commit_result
+  ERROR_VARIABLE pin_probe_commit_error)
+if(NOT pin_probe_commit_result EQUAL 0)
+  message(FATAL_ERROR "dependency contract: cannot commit pin probe: ${pin_probe_commit_error}")
+endif()
+execute_process(
+  COMMAND "${NATIVE_GIT}" -C "${pin_probe_repo}" rev-parse HEAD
+  RESULT_VARIABLE pin_probe_head_result
+  OUTPUT_VARIABLE pin_probe_sha
+  ERROR_VARIABLE pin_probe_head_error)
+if(NOT pin_probe_head_result EQUAL 0)
+  message(FATAL_ERROR "dependency contract: cannot read pin probe SHA: ${pin_probe_head_error}")
+endif()
+string(STRIP "${pin_probe_sha}" pin_probe_sha)
+
+function(run_pin_probe expected_sha expected_result expected_message label)
+  set(pin_probe_script "${pin_probe_root}/${label}.cmake")
+  file(WRITE "${pin_probe_script}"
+    "include([[${PREPARE_IPLUG2_FILE}]])\n"
+    "doppelbanger_require_pinned_checkout([[${pin_probe_repo}]] [[${expected_sha}]])\n")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -P "${pin_probe_script}"
+    RESULT_VARIABLE actual_result
+    OUTPUT_VARIABLE probe_output
+    ERROR_VARIABLE probe_error)
+  set(combined_output "${probe_output}${probe_error}")
+  if(expected_result STREQUAL "success")
+    if(NOT actual_result EQUAL 0)
+      message(FATAL_ERROR
+        "dependency contract: exact clean pinned checkout must be accepted: ${combined_output}")
+    endif()
+  elseif(actual_result EQUAL 0 OR NOT combined_output MATCHES "${expected_message}")
+    message(FATAL_ERROR
+      "dependency contract: ${label} must be rejected with '${expected_message}': "
+      "${combined_output}")
+  endif()
+endfunction()
+
+run_pin_probe("${pin_probe_sha}" success "" clean-pin-probe)
+run_pin_probe(
+  "0000000000000000000000000000000000000000"
+  failure
+  "Pinned plugin dependency revision mismatch"
+  mismatched-pin-probe)
+file(APPEND "${pin_probe_repo}/tracked.txt" "dirty\n")
+run_pin_probe(
+  "${pin_probe_sha}"
+  failure
+  "Pinned plugin dependency is dirty"
+  dirty-pin-probe)
+file(REMOVE_RECURSE "${pin_probe_root}")
+require_match("${prepare_iplug2}"
+  "iPlug2 preparation must verify exact clean recursive source pins before staging"
+  "doppelbanger_verify_pinned_dependencies[ \t\r\n]*\\([ \t\r\n]*\\\"\\$\\{source_root\\}\\\"")
+
 set(copy_probe_root "${PROJECT_ROOT}/build/dependency-contract-copy-probe")
 file(REMOVE_RECURSE "${copy_probe_root}")
 file(MAKE_DIRECTORY "${copy_probe_root}/source/nested/deeper")
