@@ -13,6 +13,7 @@ if (-not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {
 
 $script:passed = 0
 $expectedVendorOutput = "Factory Info:`r`n`tvendor = Goblin City Records`r`n"
+$wrongVendorOutput = "Factory Info:`r`n`tvendor = William Hayden`r`n"
 function Assert-True {
     param([bool]$Condition, [string]$Message)
 
@@ -121,8 +122,19 @@ try {
     Assert-Equal ([int]$persistedResult.ValidatorExitCode) 0 'machine-readable evidence records the real exit code'
     Assert-True ([bool]$persistedResult.Success) 'machine-readable evidence records success only after evidence is written'
 
+    foreach ($identityFailure in @(
+        [pscustomobject]@{ Name = 'missing vendor'; StdOut = "Factory Info:`r`n`tname = Doppelbanger`r`n" },
+        [pscustomobject]@{ Name = 'malformed vendor'; StdOut = "Factory Info:`r`n`tvendor : Goblin City Records`r`n" }
+    )) {
+        $identityInvocations = [System.Collections.Generic.List[object]]::new()
+        $identityResult = Invoke-WrapperFixture -Fixture $fixture -ProcessLauncher (New-ProcessLauncher -Invocations $identityInvocations -StdOut $identityFailure.StdOut)
+        Assert-True (-not $identityResult.Success) "a zero-exit report with $($identityFailure.Name) cannot report success"
+        Assert-Equal $identityResult.ValidationError 'DBVST3_IDENTITY: validator factory vendor must be Goblin City Records' "$($identityFailure.Name) has a stable validation error"
+        Assert-Equal $identityInvocations.Count 1 "$($identityFailure.Name) is detected from the real validator report"
+    }
+
     $wrongVendorInvocations = [System.Collections.Generic.List[object]]::new()
-    $wrongVendorResult = Invoke-WrapperFixture -Fixture $fixture -ProcessLauncher (New-ProcessLauncher -Invocations $wrongVendorInvocations -StdOut "Factory Info:`r`n`tvendor = William Hayden`r`n")
+    $wrongVendorResult = Invoke-WrapperFixture -Fixture $fixture -ProcessLauncher (New-ProcessLauncher -Invocations $wrongVendorInvocations -StdOut $wrongVendorOutput)
     Assert-True (-not $wrongVendorResult.Success) 'a validator report with the previous distributor cannot report success'
     Assert-Equal $wrongVendorResult.ValidationError 'DBVST3_IDENTITY: validator factory vendor must be Goblin City Records' 'a distributor mismatch has a stable validation error'
     Assert-Equal $wrongVendorInvocations.Count 1 'a distributor mismatch is detected from the real validator report'
@@ -165,19 +177,29 @@ try {
     Assert-Equal $zeroTimeoutInvocations.Count 0 'a non-positive timeout fails before launch'
 
     $timeoutInvocations = [System.Collections.Generic.List[object]]::new()
-    $timeoutResult = Invoke-WrapperFixture -Fixture $fixture -TimeoutSeconds 5 -ProcessLauncher (New-ProcessLauncher -Invocations $timeoutInvocations -TimedOut $true -ExitCode 137)
+    $timeoutResult = Invoke-WrapperFixture -Fixture $fixture -TimeoutSeconds 5 -ProcessLauncher (New-ProcessLauncher -Invocations $timeoutInvocations -TimedOut $true -ExitCode 137 -StdOut $wrongVendorOutput -StdErr 'timeout stderr')
     Assert-True (-not $timeoutResult.Success) 'a timed-out validator fails'
     Assert-True $timeoutResult.TimedOut 'a timed-out validator is recorded'
     Assert-Equal $timeoutResult.ValidatorExitCode 137 'a timed-out validator retains its real exit code'
+    Assert-Equal $timeoutResult.ValidationError '' 'a timed-out validator is not replaced by an identity error'
+    Assert-Equal $timeoutResult.LaunchError '' 'a timed-out validator does not invent a launch error'
+    Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $fixture.EvidencePath 'validator.stdout.txt'))) $wrongVendorOutput 'a timed-out validator retains stdout evidence without enforcing identity'
+    Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $fixture.EvidencePath 'validator.stderr.txt'))) 'timeout stderr' 'a timed-out validator retains stderr evidence'
 
     foreach ($failure in @(
-        [pscustomobject]@{ Name = 'launch error'; ExitCode = 0; LaunchError = 'simulated launch error' },
-        [pscustomobject]@{ Name = 'crash'; ExitCode = -1073741819; LaunchError = '' },
-        [pscustomobject]@{ Name = 'nonzero exit'; ExitCode = 7; LaunchError = '' }
+        [pscustomobject]@{ Name = 'launch error'; ExitCode = 0; LaunchError = 'simulated launch error'; ExpectedStdErr = 'simulated launch error' },
+        [pscustomobject]@{ Name = 'crash'; ExitCode = -1073741819; LaunchError = ''; ExpectedStdErr = 'validator failure stderr' },
+        [pscustomobject]@{ Name = 'nonzero exit'; ExitCode = 7; LaunchError = ''; ExpectedStdErr = 'validator failure stderr' }
     )) {
         $failureInvocations = [System.Collections.Generic.List[object]]::new()
-        $failureResult = Invoke-WrapperFixture -Fixture $fixture -ProcessLauncher (New-ProcessLauncher -Invocations $failureInvocations -ExitCode $failure.ExitCode -LaunchError $failure.LaunchError)
+        $failureResult = Invoke-WrapperFixture -Fixture $fixture -ProcessLauncher (New-ProcessLauncher -Invocations $failureInvocations -ExitCode $failure.ExitCode -LaunchError $failure.LaunchError -StdOut $wrongVendorOutput -StdErr 'validator failure stderr')
         Assert-True (-not $failureResult.Success) "$($failure.Name) cannot report success"
+        Assert-Equal $failureResult.ValidationError '' "$($failure.Name) is not replaced by an identity error"
+        Assert-Equal $failureResult.LaunchError $failure.LaunchError "$($failure.Name) retains launch-error evidence"
+        Assert-Equal $failureResult.ValidatorExitCode $failure.ExitCode "$($failure.Name) retains its validator exit code"
+        Assert-True (-not $failureResult.TimedOut) "$($failure.Name) remains distinct from a timeout"
+        Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $fixture.EvidencePath 'validator.stdout.txt'))) $wrongVendorOutput "$($failure.Name) retains stdout evidence without enforcing identity"
+        Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $fixture.EvidencePath 'validator.stderr.txt'))) $failure.ExpectedStdErr "$($failure.Name) retains stderr evidence"
     }
 
     $shortWriteInvocations = [System.Collections.Generic.List[object]]::new()

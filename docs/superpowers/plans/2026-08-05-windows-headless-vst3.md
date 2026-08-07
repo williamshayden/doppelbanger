@@ -667,11 +667,12 @@ Allocate `5 * (maxFrames + 1)` raw points and `maxFrames` merged events during s
 - Modify: `tests/plugin/CMakeLists.txt`
 - Modify: root `CMakeLists.txt`
 
-Plugin configuration is fixed:
+This historical implementation sketch is superseded by the canonical values in
+`plugin/config.h`. The public distributor name is Goblin City Records:
 
 ```cpp
 #define PLUG_NAME "Doppelbanger"
-#define PLUG_MFR "William Hayden"
+#define PLUG_MFR "Goblin City Records"
 #define PLUG_VERSION_HEX 0x00000100
 #define PLUG_VERSION_STR "0.1.0"
 #define PLUG_UNIQUE_ID 'Dbgr'
