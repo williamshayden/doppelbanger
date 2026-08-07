@@ -48,6 +48,18 @@ target_compile_features(StateCodecTests PRIVATE cxx_std_17)
 target_compile_options(StateCodecTests PRIVATE /W4 /WX /EHsc)
 add_test(NAME StateCodecTests COMMAND StateCodecTests)
 
+add_executable(EditorBridgeTests
+  tests/plugin/EditorBridgeTests.cpp
+  plugin/EditorBridge.cpp)
+target_include_directories(EditorBridgeTests PRIVATE
+  "${CMAKE_SOURCE_DIR}/plugin"
+  "${CMAKE_SOURCE_DIR}/third_party/iPlug2/Dependencies/Extras")
+target_compile_definitions(EditorBridgeTests PRIVATE
+  EDITOR_BRIDGE_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/plugin/contracts/fixtures/editor_bridge_v1_cases.json")
+target_compile_features(EditorBridgeTests PRIVATE cxx_std_17)
+target_compile_options(EditorBridgeTests PRIVATE /W4 /WX /EHsc)
+add_test(NAME EditorBridgeTests COMMAND EditorBridgeTests)
+
 add_executable(PluginLifecycleTests
   tests/plugin/PluginLifecycleTests.cpp
   plugin/Doppelbanger.cpp
@@ -80,11 +92,14 @@ add_library(Doppelbanger-vst3 MODULE
   plugin/Doppelbanger.cpp
   plugin/Doppelbanger.h
   plugin/config.h
+  plugin/EditorBridge.cpp
+  plugin/EditorBridge.h
   plugin/StateCodec.cpp
   plugin/StateCodec.h)
 target_include_directories(Doppelbanger-vst3 PRIVATE
   "${CMAKE_SOURCE_DIR}/include"
-  "${CMAKE_SOURCE_DIR}/plugin")
+  "${CMAKE_SOURCE_DIR}/plugin"
+  "${CMAKE_SOURCE_DIR}/third_party/iPlug2/Dependencies/Extras")
 target_compile_definitions(Doppelbanger-vst3 PRIVATE
   NO_IGRAPHICS
   SAMPLE_TYPE_FLOAT)
