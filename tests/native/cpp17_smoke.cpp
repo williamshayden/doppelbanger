@@ -24,17 +24,15 @@ static int db_run_cpp17_update_smoke() {
       0.0,
       {0.0, 0.0, 0.0},
   };
-  db_meter_snapshot_v1 meter = {
-      static_cast<uint32_t>(sizeof(db_meter_snapshot_v1)),
-      DB_ABI_VERSION,
-      DB_PROCESSOR_VERSION,
-      0u,
-      {0.0f, 0.0f},
-      {0.0f, 0.0f},
-  };
+  db_meter_snapshot_v1 meter;
   db_processor *processor = nullptr;
   float left[DB_SMOKE_FRAMES];
   float right[DB_SMOKE_FRAMES];
+
+  meter.struct_size = static_cast<uint32_t>(sizeof(db_meter_snapshot_v1));
+  meter.abi_version = DB_ABI_VERSION;
+  meter.processor_version = DB_PROCESSOR_VERSION;
+  meter.reserved = 0u;
 
   db_status status =
       db_processor_create(&plan, 48000.0, DB_SMOKE_FRAMES, &processor);

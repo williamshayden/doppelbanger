@@ -18,14 +18,17 @@ static int db_run_c11_update_smoke(void) {
       (uint32_t)sizeof(db_runtime_plan_v1), DB_ABI_VERSION,
       DB_PLAN_SCHEMA_VERSION, DB_PROCESSOR_VERSION, 0u, 0u, 0.0,
       {0.0, 0.0, 0.0}};
-  db_meter_snapshot_v1 meter = {
-      (uint32_t)sizeof(db_meter_snapshot_v1), DB_ABI_VERSION,
-      DB_PROCESSOR_VERSION, 0u, {0.0f, 0.0f}, {0.0f, 0.0f}};
+  db_meter_snapshot_v1 meter;
   db_processor *processor = NULL;
   float left[DB_SMOKE_FRAMES];
   float right[DB_SMOKE_FRAMES];
   db_status status;
   size_t frame;
+
+  meter.struct_size = (uint32_t)sizeof(db_meter_snapshot_v1);
+  meter.abi_version = DB_ABI_VERSION;
+  meter.processor_version = DB_PROCESSOR_VERSION;
+  meter.reserved = 0u;
 
   status = db_processor_create(&plan, 48000.0, DB_SMOKE_FRAMES, &processor);
   if (db_smoke_expect_status("C11", "update create", status,

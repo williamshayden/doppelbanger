@@ -1,6 +1,6 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::mem::{align_of, offset_of, size_of};
+use std::mem::{MaybeUninit, align_of, offset_of, size_of};
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -320,10 +320,13 @@ fn meter_reads_are_finite_versioned_and_non_mutating() {
         },
         DbStatus::Ok
     );
+    let mut header_only_meter = meter_snapshot_header_only();
     assert_eq!(
-        unsafe { db_processor_get_meter_v1(subject, &mut meter) },
+        unsafe { db_processor_get_meter_v1(subject, header_only_meter.as_mut_ptr()) },
         DbStatus::Ok
     );
+    // SAFETY: A successful call writes the complete snapshot.
+    meter = unsafe { header_only_meter.assume_init() };
     assert_eq!(meter.struct_size as usize, size_of::<DbMeterSnapshotV1>());
     assert_eq!(meter.abi_version, DB_ABI_VERSION);
     assert_eq!(meter.processor_version, DB_PROCESSOR_VERSION);
@@ -497,6 +500,20 @@ fn meter_snapshot() -> DbMeterSnapshotV1 {
         input_peak: [0.0; 2],
         output_peak: [0.0; 2],
     }
+}
+
+fn meter_snapshot_header_only() -> MaybeUninit<DbMeterSnapshotV1> {
+    let mut storage = MaybeUninit::<DbMeterSnapshotV1>::uninit();
+    let output = storage.as_mut_ptr();
+    // SAFETY: These are the only fields callers must initialize before a meter read. The function
+    // under test must not read the intentionally uninitialized peak payload.
+    unsafe {
+        ptr::addr_of_mut!((*output).struct_size).write(size_of::<DbMeterSnapshotV1>() as u32);
+        ptr::addr_of_mut!((*output).abi_version).write(DB_ABI_VERSION);
+        ptr::addr_of_mut!((*output).processor_version).write(DB_PROCESSOR_VERSION);
+        ptr::addr_of_mut!((*output).reserved).write(0);
+    }
+    storage
 }
 
 fn count(counter: &AtomicUsize) {
