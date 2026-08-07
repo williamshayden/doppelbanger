@@ -12,7 +12,8 @@ function(doppelbanger_add_rust_target)
 
   execute_process(
     COMMAND "${DOPPELBANGER_CARGO_EXECUTABLE}" rustc --locked --offline --release --lib
-      --target x86_64-pc-windows-msvc -- --print native-static-libs
+      --target x86_64-pc-windows-msvc --
+      -C target-feature=+crt-static --print native-static-libs
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     RESULT_VARIABLE rustc_result
     OUTPUT_VARIABLE rustc_output
@@ -43,7 +44,8 @@ function(doppelbanger_add_rust_target)
   add_custom_command(
     OUTPUT "${DOPPELBANGER_RUST_LIBRARY}"
     COMMAND "${DOPPELBANGER_CARGO_EXECUTABLE}" rustc --locked --offline --release --lib
-      --target x86_64-pc-windows-msvc -- --print native-static-libs
+      --target x86_64-pc-windows-msvc --
+      -C target-feature=+crt-static --print native-static-libs
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     DEPENDS
       "${CMAKE_SOURCE_DIR}/Cargo.toml"

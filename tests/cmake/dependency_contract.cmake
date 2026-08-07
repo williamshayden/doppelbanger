@@ -203,6 +203,12 @@ endif()
 
 require_match("${build_rust}" "Rust build must use the MSVC target" "--target[ \t\r\n]+x86_64-pc-windows-msvc")
 require_match("${build_rust}" "Rust build must use cargo rustc --locked --offline --release --lib" "rustc[ \t\r\n]+--locked[ \t\r\n]+--offline[ \t\r\n]+--release[ \t\r\n]+--lib")
+string(REGEX MATCHALL "target-feature=\\+crt-static" rust_static_crt_flags "${build_rust}")
+list(LENGTH rust_static_crt_flags rust_static_crt_flag_count)
+if(NOT rust_static_crt_flag_count EQUAL 2)
+  message(FATAL_ERROR
+    "dependency contract: both Rust build commands must use the static MSVC runtime")
+endif()
 require_match("${build_rust}" "Rust build must print native static libraries" "--print[ \t\r\n]+native-static-libs")
 require_match("${build_rust}" "Rust archive must be an imported library" "add_library[ \t\r\n]*\\([ \t\r\n]*doppelbanger_rust_archive[ \t\r\n]+static[ \t\r\n]+imported")
 require_match("${build_rust}" "Rust build must expose a buildable doppelbanger_rust interface" "add_library[ \t\r\n]*\\([ \t\r\n]*doppelbanger_rust[ \t\r\n]+interface")
