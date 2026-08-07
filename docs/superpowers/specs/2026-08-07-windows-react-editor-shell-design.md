@@ -79,6 +79,42 @@ No JavaScript, JSON parsing, allocation, WebView call, file access, lock, or
 wait is added to the audio callback. Editor destruction releases editor-only
 state and does not destroy or replace the Rust processor.
 
+## Reference Architecture Decision
+
+The production asset route follows the published conventions of the formats
+and frameworks in use rather than inventing a private serving mechanism:
+
+- Steinberg defines a Windows VST3 as a bundle-like directory and reserves
+  [`Contents/Resources`](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Locations%2BFormat/Plugin%2BFormat.html)
+  for additional plug-in resources.
+- iPlug2 recommends `WebViewEditorDelegate` for a whole WebView UI, its
+  [`IPlugWebUI` example](https://github.com/iPlug2/iPlug2/tree/master/Examples/IPlugWebUI)
+  declares web resources, and its Windows implementation maps a local folder
+  to an HTTPS virtual origin with WebView2. The example also states that
+  Windows packaging is the product's responsibility, so Doppelbanger performs
+  and verifies that copy explicitly.
+- Microsoft's
+  [local-content guidance](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/working-with-local-content)
+  documents virtual-host folder mapping as the local-static-content option
+  that provides an HTTPS origin, relative resource resolution, and in-WebView
+  resource loading. The mapping uses the narrowest cross-origin access kind.
+- JUCE's official
+  [React plug-in example](https://juce.com/blog/juce-8-feature-overview-webview-uis/)
+  demonstrates the same higher-level convention—development assets may come
+  from localhost, but Release assets are served locally from the plug-in—using
+  JUCE's BinaryData resource provider instead of iPlug2's folder mapping.
+- Vite explicitly supports `base: './'` for
+  [embedded deployment](https://vite.dev/config/shared-options.html), which
+  keeps hashed JavaScript and CSS references independent of the install path.
+
+Accordingly, Release uses a content-hashed Vite tree at
+`Doppelbanger.vst3/Contents/Resources/web`, mapped by iPlug2 to its local HTTPS
+origin. It does not add a localhost server, custom protocol, ZIP/BinaryData
+resource server, CDN, or runtime Node process. Embedding the same files into
+the module would be a valid JUCE-style alternative, but in this iPlug2/VST3
+product it would add a second resource-serving layer without improving V1
+portability or installation.
+
 ## Packaged Frontend
 
 `plugin/ui` contains a pinned React, TypeScript, Vite, Vitest, and Testing
@@ -177,7 +213,8 @@ Manual Ableton gate:
 ## Deferred Work
 
 Reference capture, analysis services, Postgres/PostgREST, report generation,
-installer-driven WebView2 acquisition, code signing, macOS, and richer mastering
-controls require separate approval and evidence. This shell establishes the
+code signing, macOS, and richer mastering controls require separate approval
+and evidence. The Windows installer handles the documented WebView2 Evergreen
+prerequisite for this editor. This shell establishes the
 final editor host, resource, bridge, automation, and visual foundations so
 those workflows do not require replacing the UI stack.
