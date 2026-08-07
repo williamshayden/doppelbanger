@@ -29,6 +29,30 @@ function New-NativeToolFixture {
     return $tools
 }
 
+function New-PlatformFixture {
+    param(
+        [string]$Version = '10.0.22631.0',
+        [int]$ProductType = 1,
+        [string]$OSArchitecture = '64-bit',
+        [string]$SystemType = 'x64-based PC'
+    )
+
+    return [pscustomobject]@{
+        Version = $Version
+        ProductType = $ProductType
+        OSArchitecture = $OSArchitecture
+        SystemType = $SystemType
+    }
+}
+
+function New-PlatformLookup {
+    param([Parameter(Mandatory = $true)][object]$Platform)
+
+    return {
+        $Platform
+    }.GetNewClosure()
+}
+
 function New-CommandResolver {
     param([hashtable]$Tools)
     return {
@@ -55,13 +79,23 @@ function Invoke-DevFixture {
         [string]$Task,
         [string[]]$ProcessAncestry = @('powershell.exe', 'explorer.exe'),
         [hashtable]$Tools = (New-NativeToolFixture),
-        [bool]$IsWindows = $true
+        [bool]$IsWindows = $true,
+        [object]$Platform
     )
 
     $invocations = [System.Collections.Generic.List[object]]::new()
     try {
-        $null = & $devPath -Task $Task -ProcessAncestry $ProcessAncestry -IsWindows $IsWindows `
-            -CommandResolver (New-CommandResolver $Tools) -CommandRunner (New-CommandRunner $invocations)
+        $parameters = @{
+            Task = $Task
+            ProcessAncestry = $ProcessAncestry
+            IsWindows = $IsWindows
+            CommandResolver = (New-CommandResolver $Tools)
+            CommandRunner = (New-CommandRunner $invocations)
+        }
+        if ($null -ne $Platform) {
+            $parameters.PlatformLookup = New-PlatformLookup $Platform
+        }
+        $null = & $devPath @parameters
         return [pscustomobject]@{ Error = ''; Invocations = $invocations }
     }
     catch {
@@ -71,6 +105,53 @@ function Invoke-DevFixture {
 
 $wslResult = Invoke-DevFixture -Task doctor -ProcessAncestry @('powershell.exe', 'wsl.exe', 'explorer.exe')
 Assert-Contains $wslResult.Error 'DBDEV_WSL_FORBIDDEN' 'doctor rejects injected WSL ancestry'
+
+foreach ($clientPlatform in @(
+    (New-PlatformFixture -Version '10.0.19045.0'),
+    (New-PlatformFixture -Version '10.0.22631.0')
+)) {
+    $clientResult = Invoke-DevFixture -Task doctor -Platform $clientPlatform
+    Assert-True ([string]::IsNullOrEmpty($clientResult.Error)) "doctor accepts supported x64 client Windows $($clientPlatform.Version)"
+}
+
+foreach ($unsupportedPlatform in @(
+    (New-PlatformFixture -ProductType 3),
+    (New-PlatformFixture -Version '6.3.9600.0'),
+    (New-PlatformFixture -SystemType 'ARM64-based PC')
+)) {
+    $unsupportedResult = Invoke-DevFixture -Task doctor -Platform $unsupportedPlatform
+    Assert-Contains $unsupportedResult.Error 'DBDEV_WINDOWS_REQUIRED' "doctor rejects unsupported Windows platform $($unsupportedPlatform.Version)/$($unsupportedPlatform.ProductType)/$($unsupportedPlatform.SystemType)"
+}
+
+$missingLookupInvocations = [System.Collections.Generic.List[object]]::new()
+try {
+    $null = & $devPath -Task doctor -IsWindows $true `
+        -ProcessLookup { $null } `
+        -PlatformLookup (New-PlatformLookup (New-PlatformFixture)) `
+        -CommandResolver (New-CommandResolver (New-NativeToolFixture)) `
+        -CommandRunner (New-CommandRunner $missingLookupInvocations)
+    $missingLookupError = ''
+}
+catch {
+    $missingLookupError = $_.Exception.Message
+}
+Assert-Contains $missingLookupError 'DBDEV_WSL_FORBIDDEN' 'doctor fails closed when process ancestry lookup returns no record'
+Assert-True ($missingLookupInvocations.Count -eq 0) 'missing ancestry record does not invoke tools'
+
+$failedLookupInvocations = [System.Collections.Generic.List[object]]::new()
+try {
+    $null = & $devPath -Task doctor -IsWindows $true `
+        -ProcessLookup { throw 'simulated process lookup failure' } `
+        -PlatformLookup (New-PlatformLookup (New-PlatformFixture)) `
+        -CommandResolver (New-CommandResolver (New-NativeToolFixture)) `
+        -CommandRunner (New-CommandRunner $failedLookupInvocations)
+    $failedLookupError = ''
+}
+catch {
+    $failedLookupError = $_.Exception.Message
+}
+Assert-Contains $failedLookupError 'DBDEV_WSL_FORBIDDEN' 'doctor fails closed when process ancestry lookup fails'
+Assert-True ($failedLookupInvocations.Count -eq 0) 'failed ancestry inspection does not invoke tools'
 
 $pidBeforeProcessLookup = $PID
 $lookedUpProcessIds = [System.Collections.Generic.List[int]]::new()
@@ -82,6 +163,7 @@ try {
             $lookedUpProcessIds.Add($Id)
             [pscustomobject]@{ Name = 'powershell.exe'; ParentProcessId = 0 }
         }.GetNewClosure() `
+        -PlatformLookup (New-PlatformLookup (New-PlatformFixture)) `
         -CommandResolver (New-CommandResolver (New-NativeToolFixture)) `
         -CommandRunner (New-CommandRunner $lookupInvocations)
     $processLookupError = ''

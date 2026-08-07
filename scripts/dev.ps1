@@ -8,6 +8,7 @@ param(
     [string[]]$ProcessAncestry,
     [bool]$IsWindows = ($env:OS -eq 'Windows_NT'),
     [scriptblock]$ProcessLookup,
+    [scriptblock]$PlatformLookup,
     [scriptblock]$CommandResolver,
     [scriptblock]$CommandRunner
 )
@@ -20,20 +21,46 @@ function Get-DbDevProcessAncestry {
     $names = [System.Collections.Generic.List[string]]::new()
     $currentProcessId = $PID
     for ($i = 0; $i -lt 32 -and $currentProcessId -gt 0; $i++) {
-        $process = if ($Lookup) {
-            & $Lookup $currentProcessId
-        }
-        else {
-            try {
+        try {
+            $process = if ($Lookup) {
+                & $Lookup $currentProcessId
+            }
+            else {
                 Get-CimInstance Win32_Process -Filter "ProcessId=$currentProcessId" -ErrorAction Stop
             }
-            catch { $null }
         }
-        if (-not $process) { break }
+        catch {
+            throw 'DBDEV_WSL_FORBIDDEN: process ancestry cannot be inspected'
+        }
+        if (-not $process) {
+            throw 'DBDEV_WSL_FORBIDDEN: process ancestry cannot be inspected'
+        }
         $names.Add([string]$process.Name)
         $currentProcessId = [int]$process.ParentProcessId
     }
     return $names.ToArray()
+}
+
+function Get-DbDevPlatform {
+    param([scriptblock]$Lookup)
+
+    try {
+        if ($Lookup) {
+            return & $Lookup
+        }
+
+        $operatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+        $computerSystem = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        return [pscustomobject]@{
+            Version = [string]$operatingSystem.Version
+            ProductType = [int]$operatingSystem.ProductType
+            OSArchitecture = [string]$operatingSystem.OSArchitecture
+            SystemType = [string]$computerSystem.SystemType
+        }
+    }
+    catch {
+        throw 'DBDEV_WINDOWS_REQUIRED: run this dispatcher from supported native Windows x64'
+    }
 }
 
 function Resolve-DbDevTool {
@@ -82,6 +109,23 @@ function Assert-DbDevNativeEnvironment {
 
     if (-not $IsWindows) {
         throw 'DBDEV_WINDOWS_REQUIRED: run this dispatcher from native Windows PowerShell'
+    }
+
+    $platform = Get-DbDevPlatform -Lookup $PlatformLookup
+    try {
+        $version = [version][string]$platform.Version
+        $supportedPlatform = ([int]$platform.ProductType -eq 1) -and
+            ($version.Major -eq 10) -and
+            ($version.Minor -eq 0) -and
+            ($version.Build -ge 10240) -and
+            ([string]$platform.OSArchitecture -match '(?i)^64-bit$') -and
+            ([string]$platform.SystemType -match '(?i)^x64-based PC$')
+    }
+    catch {
+        throw 'DBDEV_WINDOWS_REQUIRED: run this dispatcher from supported native Windows x64'
+    }
+    if (-not $supportedPlatform) {
+        throw 'DBDEV_WINDOWS_REQUIRED: run this dispatcher from supported native Windows x64'
     }
 
     $ancestry = if ($null -ne $Ancestry) { @($Ancestry) } else { @(Get-DbDevProcessAncestry -Lookup $ProcessLookup) }
