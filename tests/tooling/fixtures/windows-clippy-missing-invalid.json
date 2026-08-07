@@ -1,5 +1,0 @@
-{
-  "extends": "windows-native-valid.json",
-  "rust_components": {"rustfmt":true,"clippy":false},
-  "expected_code": "DBDOC_RUST_COMPONENT_MISSING"
-}

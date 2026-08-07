@@ -1,47 +1,102 @@
 # Validation And Evidence
 
-Validation is part of the product architecture. A change is not complete because audio was produced; it is complete when the relevant contract, quality, performance, and host evidence can be reproduced from a named commit and input manifest.
+Validation is part of the product architecture. A change is not complete because audio was produced; it is complete when the relevant contract, build, and host evidence can be reproduced from a named commit. This document separates the implemented Windows native foundation from later release gates.
 
-## Principles
+## Current Windows native foundation
 
-- Generated fixtures prove deterministic mechanics, not mastering quality.
-- Public paired audio proves repeatable algorithm behavior, not techno-specific taste.
-- User-owned pairs prove product relevance but remain outside git.
-- Objective metrics are directional evidence, not a replacement for loudness-matched listening.
-- Performance evidence is valid only with machine, build, and workload provenance.
-- The offline renderer and plugin callback share one processor; separate quality baselines are prohibited.
+Task 4 provides a headless Windows x64 VST3 bundle and its Rust/C/C++ lifecycle and state contracts. Task 5A adds the automated native validation gate. The implemented scope is Windows x64 only; macOS is not a V1 claim.
 
-## Validation Tiers
+From an x64 Visual Studio developer PowerShell, the local automated gate is:
 
-### Tier 0: Static Contracts
+```powershell
+.\scripts\dev.ps1 -Task doctor
+.\scripts\dev.ps1 -Task format
+.\scripts\dev.ps1 -Task test
+.\scripts\dev.ps1 -Task configure
+.\scripts\dev.ps1 -Task build
+.\scripts\dev.ps1 -Task validate
+```
 
-Runs on every change:
+`scripts/dev.ps1` rejects WSL ancestry. It configures the checked-in Release product preset and the pinned Steinberg SDK validator without plug-in deployment, builds the product/tests and only the validator target, runs CTest, then invokes the wrapper with these exact paths:
+
+```text
+build\windows-vst3-validator\bin\validator.exe
+build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3
+```
+
+The wrapper launches Steinberg's validator directly, requires exact absolute native drive paths, rejects relative/WSL/UNC/quoted/wildcard targets before launch, drains stdout and stderr separately, enforces a bounded timeout, and fails the calling PowerShell process for any launch error, timeout, nonzero exit, crash, or incomplete evidence write.
+
+### Tier 0: static and native-foundation contracts
+
+Tier 0 runs formatting, warnings-denied lint, locked Rust tests, dependency and dispatcher contracts, native CTest, and the official Steinberg VST3 Validator. CI associates uploaded reports with the validating git commit through workflow-run metadata; the local validator result records exact paths and UTC start/end timestamps.
+
+## Automated evidence
+
+Ignored native-foundation evidence lives at:
+
+```text
+var\validation\native-foundation\
+```
+
+Each validator run retains:
+
+- `validator.stdout.txt` and `validator.stderr.txt` as separate streams;
+- `validator.result.json` with exact paths, UTC start/end, timeout, timed-out flag, real validator exit code, and outcome;
+- native CTest and Rust test reports when produced by CI.
+
+The Windows workflow performs a recursive checkout, uses Rust `1.97.1` and an x64 MSVC environment, runs format, warnings-denied clippy, locked Rust tests, the dependency and PowerShell contracts, Release configure/build/CTest, and the official validator. Validation also requires the VST3 factory to advertise `Goblin City Records` as its vendor/distributor. Its narrow artifact contains only the unsigned `Doppelbanger.vst3` bundle and sanitized validator/test reports. It does not upload validator binaries, build intermediates, caches, source, private audio, or machine-specific paths. It does not start Docker, databases, services, or copy a plug-in to a system directory.
+
+## Deliberately unperformed manual host gate
+
+This automated task does not deploy, launch, scan, configure, or inspect Ableton. The separately authorized Task 5 manual gate still requires a narrow Ableton Live 12 smoke: copy only the built bundle to the standard VST3 location, scan and insert it in a disposable Set, automate controls, save/reopen, and record version, sample rate, buffer size, bundle hash, and pass/fail evidence outside Git. No private Set or audio belongs in the repository.
+
+## Later release gates, not current claims
+
+The following are subsequent milestones and are not satisfied by the native foundation:
+
+- pluginval at strictness level 10;
+- custom editor and UI interaction coverage;
+- a fixed-latency true-peak limiter and its ablation/conformance evidence;
+- long callback stress at 96 kHz/32-frame blocks, with allocation, lock, I/O, finite-output, and dropped-frame checks;
+- installer, clean-machine packaging, signing, and customer deployment;
+- the complete local analysis/capture workflow and its end-to-end host proof;
+- release listening and real-audio corpus gates.
+
+## Separate analysis-development validation
+
+The repository also contains analysis, plan generation, offline rendering, and benchmark work. Postgres/PostgREST and Docker belong only to that separate analysis-development context; they are never VST3 runtime dependencies and are not part of the native foundation gate. When analysis work changes, its own contracts, deterministic DSP checks, API pipeline tests, and sanitized corpus evidence remain required before making analysis or quality claims.
+
+Start the analysis services and worker in separate terminals, then submit an
+offline render from a third terminal:
+
+```bash
+docker compose up -d --wait
+cargo run --bin doppelbanger -- worker
+cargo run --bin doppelbanger -- master \
+  --reference /absolute/path/reference.wav \
+  --target /absolute/path/premaster.wav \
+  --output /absolute/path/mastered.wav
+```
+
+Prepare AlbumDB and run its fast development benchmark with:
+
+```bash
+./scripts/fetch_albumdb.sh
+cargo run --release --bin doppelbanger -- benchmark \
+  --corpus var/albumdb/pairs \
+  --output var/validation/albumdb-fast.json
+```
+
+Add `--full` for all ten pairs. Ordinary analysis-development checks are:
 
 ```bash
 cargo fmt --all -- --check
+cargo test
 cargo clippy --all-targets -- -D warnings
-cargo test --test decision_docs --test docs_current
 docker compose config
 ```
 
-This tier checks formatting, lint, documentation invariants, schemas, and build configuration. It does not claim audio correctness.
-
-### Tier 1: Deterministic DSP Units
-
-Runs on every DSP or plan change:
-
-```bash
-cargo test --test dsp_contract
-cargo test --test analysis_contract
-cargo test --test mastering_pipeline
-bash scripts/test_native_ffi.sh
-```
-
-Coverage includes exact bypass, filter direction, bounds, block partition invariance, anti-phase energy, malformed input, finite output, zero callback allocation/deallocation, fixed ABI layout, and native C/C++ compile-link-run behavior. Tests use generated signals with known frequencies and levels so each assertion has a specific physical meaning.
-
-### Tier 2: API And Pipeline Integration
-
-Runs before merging changes to state, jobs, worker behavior, or the product path:
+Changes to the API or worker also run the ignored integration gate:
 
 ```bash
 docker compose up -d --wait
@@ -49,136 +104,12 @@ cargo test --test api_integration -- --ignored --test-threads=1
 docker compose down
 ```
 
-It proves PostgREST request creation, atomic worker claim, and the exact request-kind transitions: `plan_only` follows `queued -> analyzing -> plan_ready`, while `validation_render` must stop at committed `plan_ready` until an explicit idempotent claim with the same plan hash advances it through `rendering -> complete`; either kind may enter `failed` from a nonterminal state. It also proves early or mismatched render claims fail, render fields are optional only for `plan_only`, reports use the canonical active-plan hash, artifact roots are managed, authentication is required, traversal is rejected, and failures are explicit. Audio bytes never travel through PostgREST.
+That separate lifecycle keeps `plan_only` at `queued -> analyzing -> plan_ready`. An explicit idempotent claim with the same plan hash is required before a render can advance, and reports use the canonical active-plan hash. AlbumDB is one public paired-audio corpus for those later analysis and quality gates.
 
-### Tier 3: Fast Real-Audio Quality
+Generated fixtures prove deterministic mechanics, not mastering quality. Public paired audio proves repeatable algorithm behavior, and user-owned pairs remain outside Git. Objective metrics support loudness-matched listening; they do not replace it. The offline renderer and plug-in callback continue to share one processor, so separate processing baselines are prohibited.
 
-Runs for DSP, analyzer, plan, benchmark, or release-candidate changes. It uses prepared AlbumDB pairs `01`, `04`, and `10`:
+## Evidence handling and triage
 
-```bash
-cargo run --release --bin doppelbanger -- benchmark \
-  --corpus var/albumdb/pairs \
-  --output var/validation/albumdb-fast.json
-```
+Raw audio, private paths, and routine local output remain under ignored `var/`. Committed evidence, when a later milestone authorizes it, must be small, sanitized, machine-readable, and name its commit, workload, platform, command, and UTC timestamp.
 
-The manifest and SHA-256 values are verified before processing. A three-pair run is a development gate, not a release claim.
-
-### Tier 4: Full Real-Audio And User Corpus
-
-Runs for release candidates and algorithm decisions:
-
-```bash
-cargo run --release --bin doppelbanger -- benchmark \
-  --corpus var/albumdb/pairs \
-  --output var/validation/albumdb-full.json \
-  --full
-```
-
-All ten AlbumDB pairs must pass. At least three private techno pairs then run through the same command and report schema. Private paths, hashes that identify unreleased material, and audio are not committed; sanitized aggregate metrics and completed audition records may be retained.
-
-### Tier 5: Plugin Contract
-
-Required once the wrapper exists:
-
-- build optimized VST3 bundles for macOS arm64/x86_64 and Windows x86_64;
-- run the official Steinberg VST3 Validator with zero failures;
-- run pluginval at strictness level 10 with zero failures;
-- run the repository headless host harness across the sample-rate and block-size matrix;
-- prove offline and plugin adapter sample parity;
-- prove state save/restore, stable parameter IDs, automation, bypass, reset, and reported latency;
-- run the callback stress benchmark with zero allocations, locks, I/O, and non-finite output.
-- capture for 30 minutes at 96 kHz/32-frame blocks with zero dropped frames.
-
-### Tier 6: DAW And Listening
-
-The release matrix includes Ableton Live on macOS and Windows. For each target build:
-
-1. Scan and load the plugin.
-2. Analyze a reference and premaster through the local service.
-3. Play, bypass, automate every exposed parameter, and change sample rate/buffer size.
-4. Save, close, stop the service, reopen, and confirm the embedded plan still processes.
-5. Freeze and perform an offline export.
-6. Null or compare the export against the headless shared-processor render within the declared tolerance.
-7. Complete `docs/AUDITION.md` at matched loudness.
-
-Screenshots are supporting evidence. Validator logs, report JSON, exported measurements, and exact host versions are the primary evidence.
-
-## Premaster-To-Master Measurement
-
-Every pair produces signed `reference - target` metrics before processing and `reference - output` metrics after processing.
-
-| Area | Primary metric | Role |
-| --- | --- | --- |
-| loudness | absolute integrated-LUFS error | active gain target and gate |
-| peak safety | output true peak and shortfall | active safety gate |
-| tonal balance | nine signed spectral deltas grouped into low/mid/high processor regions | active EQ target and gate |
-| dynamics | LRA error, PLR error, max short-term LUFS error | observation and later dynamics trigger |
-| transients | density and p95 spectral-flux error | observation and later transient trigger |
-| stereo | correlation error and low/mid/high M/S ratio error | observation and later stereo trigger |
-| integrity | format, duration, finite values, clipping, DC | hard regression gate |
-
-The EQ quality score is the median of three regional mean-absolute errors, matching the three controlled EQ filters. Reports also retain all nine signed deltas and applied gains so a passing aggregate cannot hide the wrong filter direction.
-
-Current hard tonal gates:
-
-- median three-region error improves by at least `25%`;
-- no pair regresses more than `0.25 dB`;
-- generated multitone tests assert the expected low/mid/high gain direction;
-- anti-phase signals retain their spectral energy.
-
-Current hard loudness gates:
-
-- absolute LUFS error may regress at most `0.05 dB` without a safety shortfall;
-- when true-peak headroom limits gain, regression remains capped at `0.25 dB` and shortfall must be reported;
-- output true peak remains at or below `-1 dBTP` within the analyzer's `0.1 dB` tolerance.
-
-## Dynamics And Limiter Decision Rule
-
-Dynamics processing is added from evidence, not because a mastering chain is expected to contain it.
-
-1. Establish the validated plugin baseline with EQ and safe gain.
-2. Quantify remaining LUFS shortfall, PLR/LRA error, transient error, and listening failures by pair and section.
-3. Implement the plugin-MVP true-peak safety limiter as an isolated processor stage with at most `5 ms` of fixed, exactly reported latency, oversampling/conformance tests, gain-reduction telemetry, and limiter-only ablation.
-4. Accept the limiter only if it closes repeatable loudness gaps without exceeding artifact, transient, peak, callback, and listening thresholds.
-5. Add compression only when limiter-only results leave a repeatable dynamics-shape gap across multiple real pairs. Compare baseline, limiter-only, and limiter-plus-compressor with identical loudness and plans.
-
-No stage is accepted solely because the final LUFS is closer. Severe pumping, transient loss, distortion, stereo shift, or hidden latency is a failure.
-
-## Performance Evidence
-
-Machine-specific reports must include:
-
-- git commit and dirty status;
-- package, analyzer, processor, ABI, and plugin versions;
-- build profile and compiler version;
-- operating system, architecture, CPU model, logical core count, and memory;
-- sample rate, block-size sequence, channel layout, warm-up, and run duration;
-- corpus DOI, manifest hash, pair IDs, and input hashes;
-- per-file analysis/render timing and per-block callback distribution;
-- p50, p95, p99, maximum, realtime factor, peak RSS, and gate results;
-- exact command and UTC timestamp.
-
-Debug-build timing is diagnostic only. Shared CI catches gross regressions; the named baseline machine owns hard realtime thresholds.
-
-## Evidence Storage
-
-Raw audio, private paths, and routine local output live under ignored `var/`. Reproducible release evidence is organized as:
-
-```text
-var/validation/<run-id>/             local raw logs, renders, reports
-validation/baselines/<version>/      reviewed aggregate JSON, no audio
-validation/manifests/                public corpus and workload manifests
-```
-
-Only small, sanitized, machine-readable aggregate evidence is committed. Every committed baseline names its git commit, workload manifest, platform, and command. Replacing a baseline requires a PR that explains the measured change; tests never auto-update expected quality.
-
-## Regression Triage
-
-When a gate fails:
-
-1. Reproduce from a clean optimized build and unchanged manifest.
-2. Classify analyzer change, processor change, fixture/corpus change, environment change, or test defect.
-3. Inspect per-pair and per-region values before aggregate scores.
-4. Keep the failed evidence; do not widen tolerances to make a branch pass.
-5. Add the smallest regression test that measures the root cause.
-6. Update a threshold only with an explicit decision record and before/after evidence.
+When a gate fails, retain the failed evidence, reproduce from an unchanged optimized build, classify the failure, inspect the specific report before an aggregate, and add the smallest regression contract that measures the root cause. Do not widen tolerances or substitute a manual claim for a failed gate.

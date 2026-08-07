@@ -1,56 +1,84 @@
 # doppelbanger
 
-Local-first reference mastering for Ableton Live and other DAWs.
+## Windows x64 VST3 foundation
 
-doppelbanger is building toward a VST3 plugin for macOS and Windows. The plugin will capture dry target audio from the DAW, compare it with a selected reference master through a local analysis service, embed an editable plan in the DAW project, and process host audio through one shared real-time-safe Rust DSP core.
-
-## Status
-
-Early development. The repository currently contains deterministic analysis, plan generation, an API-backed worker, an offline validation renderer, corpus benchmarks, and the first allocation-free block processor. The iPlug2 VST3 wrapper, host UI, target-capture queue, safety limiter, Windows validation, and release packaging are not implemented yet.
-
-There is no public CLI in the MVP. The current source binary is a temporary developer and evidence harness and has no compatibility promise.
-
-## Product Path
+doppelbanger currently has a native, headless Windows x64 VST3 foundation. The
+VST3 plugin uses the shared Rust DSP core, exposes the Task 4 state and automation
+surface, advertises Goblin City Records as its vendor/distributor, and is built
+and checked entirely from native Windows tooling. Its exact unsigned bundle is:
 
 ```text
-plugin editor -> local PostgREST API -> Postgres job -> native worker
-              <- analysis + versioned plan
-
-DAW callback -> shared Rust MasteringProcessor -> host output
-benchmark    -> shared Rust MasteringProcessor -> measured WAV
+build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3
 ```
 
-Postgres/PostgREST owns durable analysis and plan state. The filesystem owns audio artifacts. The plugin stores the executable plan in DAW project state, so an existing project keeps processing when the local service is stopped. No API, database, file, allocation, or lock is permitted in the audio callback.
+This is a developer foundation, not a finished customer release. It has no
+custom editor or installer yet. macOS is not a V1 promise. Once packaging
+exists, end users will not need WSL or developer toolchains.
 
-See [the PRD](docs/PRD.md), [engineering spec](docs/ENGINEERING_SPEC.md), [plugin architecture](docs/PLUGIN_ARCHITECTURE.md), and [validation contract](docs/VALIDATION.md).
+## Native Windows development
 
-## Requirements
+Use an x64 Visual Studio developer PowerShell from the repository root. Do not
+run the dispatcher from WSL; it deliberately fails closed when its process
+ancestry includes WSL. Developers install Visual Studio Build Tools, Rust,
+CMake, and Ninja through their normal Windows installers.
 
-Current development requires:
+```powershell
+.\scripts\dev.ps1 -Task doctor
+.\scripts\dev.ps1 -Task format
+.\scripts\dev.ps1 -Task test
+.\scripts\dev.ps1 -Task configure
+.\scripts\dev.ps1 -Task build
+.\scripts\dev.ps1 -Task validate
+```
 
-- Rust toolchain
-- Docker with Compose
-- stereo MP3 or WAV test inputs
+`configure` uses the committed `windows-msvc-x64-release` preset and configures
+the pinned Steinberg SDK validator separately in
+`build\windows-vst3-validator`. `build` builds the product, native tests, and
+only the validator target, then runs the CTest preset. `validate` invokes the
+Steinberg validator directly against the exact Release bundle with a bounded
+timeout.
 
-AlbumDB setup additionally needs `curl`, `unzip`, roughly 5.3 GB of download space, and space for extracted audio and renders. Future plugin work also requires CMake, platform build tools, and the pinned iPlug2 dependency.
+Validation evidence is ignored under:
 
-## Current Developer Proof
+```text
+var\validation\native-foundation\
+```
 
-The current source tree temporarily exposes `doppelbanger master`, `doppelbanger worker`, and `doppelbanger benchmark` for automation and validation. These are not installed product interfaces and will move behind repository tooling as the plugin path takes over.
+It includes separate validator stdout and stderr files plus a JSON result with
+the exact validator and bundle paths, timestamps, timeout, exit code, and
+outcome. The automation never installs or copies the plug-in to a system VST3
+directory.
 
-Start Postgres and PostgREST:
+## Current scope
+
+The native foundation covers the VST3 bundle, Rust/C/C++ contracts, CTest, and
+the official Steinberg validator. It does not yet claim an Ableton smoke test,
+pluginval, a UI, a limiter, long realtime stress evidence, an installer, or a
+complete analysis workflow. The separate authorized Ableton milestone is still
+required before Task 5 is complete.
+
+## Separate analysis-development context
+
+The repository also contains local-first analysis, plan generation, offline
+rendering, and benchmark work. Postgres and PostgREST belong only to that
+separate analysis-development context; neither is a Doppelbanger VST3 runtime
+dependency. The plug-in restores its effective processing state from the DAW
+project without requiring a service, database, filesystem access, or an
+allocation in the audio callback.
+
+There is no public CLI. The current source binary remains a temporary developer and evidence harness for analysis-development work; it can produce
+`mastered.report.json` and `mastered.plan.json`, but those files are not
+installed product interfaces or VST3 runtime requirements.
+
+For that analysis-development workflow only, start Postgres/PostgREST and the
+native worker in separate terminals:
 
 ```bash
 docker compose up -d --wait
-```
-
-Run the native worker:
-
-```bash
 cargo run --bin doppelbanger -- worker
 ```
 
-Submit a reference and premaster file from another terminal:
+Submit an offline render from another terminal:
 
 ```bash
 cargo run --bin doppelbanger -- master \
@@ -59,43 +87,17 @@ cargo run --bin doppelbanger -- master \
   --output /absolute/path/mastered.wav
 ```
 
-A successful developer run creates:
-
-- `mastered.wav`: stereo 32-bit float output;
-- `mastered.report.json`: analyses, before/after differences, applied plan, and output measurements;
-- `mastered.plan.json`: the versioned editable plan.
-
-The future VST3 controller will request the same plan through the same API. Offline rendering already uses the shared `MasteringProcessor` that will sit behind the plugin ABI.
-
-## Current Processing Baseline
-
-- Measures LUFS, loudness range, short-term loudness, true/sample peak, PLR, nine spectral bands, stereo correlation and M/S energy, transients, clipping, DC, and non-finite samples.
-- Applies a low shelf at 120 Hz, broad bell at 1 kHz, high shelf at 6 kHz, and true-peak-constrained gain.
-- Constrains EQ to `-3..=3 dB` and gain to `-12..=12 dB`.
-- Preserves identity as an exact decoded no-op.
-- Processes arbitrary interleaved blocks without allocating and produces block-partition-invariant output.
-
-This linear stage is the measurable baseline. A transparent, fixed-latency true-peak safety limiter is required before the first release-ready plugin. Musical compression follows only if limiter-only evidence leaves a repeatable gap.
-
-## AlbumDB Benchmark
-
-The source manifest is [corpus/albumdb/manifest.json](corpus/albumdb/manifest.json). Download, verify, extract, and reconstruct all ten premaster targets:
+Prepare AlbumDB and run the fast three-pair benchmark with:
 
 ```bash
 ./scripts/fetch_albumdb.sh
-```
-
-Run the fast suite on songs 01, 04, and 10:
-
-```bash
 cargo run --release --bin doppelbanger -- benchmark \
   --corpus var/albumdb/pairs \
   --output var/validation/albumdb-fast.json
 ```
 
-Add `--full` for all ten pairs. Generated tones are unit fixtures only; they are not mastering-quality evidence. AlbumDB and private techno pairs provide the real-audio tiers described in [docs/VALIDATION.md](docs/VALIDATION.md).
-
-## Development
+Add `--full` for all ten AlbumDB pairs. Ordinary analysis-development checks
+remain:
 
 ```bash
 cargo fmt --all -- --check
@@ -104,8 +106,18 @@ cargo clippy --all-targets -- -D warnings
 docker compose config
 ```
 
-The ignored API integration test requires Compose. Contribution, PR sizing, testing, evidence, and real-time rules are in [CONTRIBUTING.md](CONTRIBUTING.md). Product decisions are append-only in [docs/DECISIONS.md](docs/DECISIONS.md).
+The shared processor currently provides bounded low/mid/high EQ and output
+gain. A fixed-latency true-peak safety limiter, custom editor, capture queue,
+and packaged distribution are later milestones, not capabilities of this
+foundation.
 
-## License
+## Validation and licensing
 
-MIT. AlbumDB is separately licensed CC BY 4.0 and is never redistributed from this repository. Plugin framework and SDK dependencies must retain their own required notices.
+The current validation boundary and later release gates are documented in
+[docs/VALIDATION.md](docs/VALIDATION.md). Product and engineering context is in
+[docs/PRD.md](docs/PRD.md), [docs/ENGINEERING_SPEC.md](docs/ENGINEERING_SPEC.md),
+and [docs/PLUGIN_ARCHITECTURE.md](docs/PLUGIN_ARCHITECTURE.md).
+
+MIT. AlbumDB is separately licensed CC BY 4.0 and is never redistributed from
+this repository. Plug-in framework and SDK dependencies retain their required
+notices.

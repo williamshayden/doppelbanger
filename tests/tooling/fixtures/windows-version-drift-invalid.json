@@ -1,5 +1,0 @@
-{
-  "extends": "windows-native-valid.json",
-  "cmake_version": "4.3.0",
-  "expected_code": "DBDOC_TOOL_VERSION_DRIFT"
-}

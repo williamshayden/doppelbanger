@@ -28,9 +28,12 @@ pub use benchmark::{
 };
 pub use dsp::{MasteringProcessor, ProcessError};
 pub use ffi::{
-    DB_ABI_VERSION, DB_MAX_BLOCK_FRAMES, DB_PLAN_SCHEMA_VERSION, DB_PROCESSOR_VERSION, DbProcessor,
-    DbRuntimePlanV1, DbStatus, db_processor_create, db_processor_destroy,
+    DB_ABI_VERSION, DB_MAX_BLOCK_FRAMES, DB_PLAN_SCHEMA_VERSION, DB_PROCESSOR_VERSION,
+    DbMeterSnapshotV1, DbPreparedRuntimeTargetsV1, DbProcessor, DbRuntimePlanV1, DbStatus,
+    db_prepare_runtime_plan_v1, db_processor_apply_prepared_v1, db_processor_apply_stepped_plan_v1,
+    db_processor_create, db_processor_destroy, db_processor_get_meter_v1,
     db_processor_latency_samples, db_processor_process_f32, db_processor_reset,
+    db_processor_set_plan_v1,
 };
 pub use plan::{
     EqFilterKindV1, EqFilterV1, MasteringPlanV1, PROCESSOR_VERSION, TRUE_PEAK_CEILING_DBTP,

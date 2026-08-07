@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-05
 
-**Status:** Approved for implementation on 2026-08-05; Milestones 0–1 are detailed in the native Windows headless VST3 implementation plan
+**Status:** Approved for implementation on 2026-08-05; Milestones 0–1 are detailed in the native Windows headless VST3 implementation plan. The Windows-only Milestone 2 scope is superseded by [`2026-08-07-windows-react-editor-shell-design.md`](2026-08-07-windows-react-editor-shell-design.md); macOS is not a V1 promise.
 
 ## Goal
 

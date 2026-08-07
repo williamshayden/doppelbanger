@@ -4,11 +4,17 @@ use std::ptr;
 
 use crate::{
     EqFilterKindV1, EqFilterV1, MasteringPlanV1, MasteringProcessor, PROCESSOR_VERSION,
-    TRUE_PEAK_CEILING_DBTP,
+    TRUE_PEAK_CEILING_DBTP, dsp::SteppedAutomationTables,
 };
 
 mod process;
+mod update;
 pub use process::db_processor_process_f32;
+pub use update::{
+    DbMeterSnapshotV1, DbPreparedRuntimeTargetsV1, db_prepare_runtime_plan_v1,
+    db_processor_apply_prepared_v1, db_processor_apply_stepped_plan_v1, db_processor_get_meter_v1,
+    db_processor_set_plan_v1,
+};
 
 pub const DB_ABI_VERSION: u32 = 1;
 pub const DB_PLAN_SCHEMA_VERSION: u32 = 1;
@@ -44,7 +50,11 @@ pub struct DbRuntimePlanV1 {
 
 pub struct DbProcessor {
     processor: MasteringProcessor,
+    stepped_automation: SteppedAutomationTables,
+    sample_rate_hz: u32,
     max_block_frames: u32,
+    input_peak: [f32; 2],
+    output_peak: [f32; 2],
     faulted: bool,
     #[cfg(test)]
     panic_next_process: bool,
@@ -97,11 +107,18 @@ pub unsafe extern "C" fn db_processor_create(
         let Ok(processor) = MasteringProcessor::new(&plan, sample_rate_hz) else {
             return DbStatus::InvalidConfiguration;
         };
+        let Ok(stepped_automation) = SteppedAutomationTables::new(sample_rate_hz) else {
+            return DbStatus::InvalidConfiguration;
+        };
         // SAFETY: output was checked above and receives ownership of the Box allocation.
         unsafe {
             *output = Box::into_raw(Box::new(DbProcessor {
                 processor,
+                stepped_automation,
+                sample_rate_hz,
                 max_block_frames,
+                input_peak: [0.0; 2],
+                output_peak: [0.0; 2],
                 faulted: false,
                 #[cfg(test)]
                 panic_next_process: false,
@@ -126,6 +143,8 @@ pub unsafe extern "C" fn db_processor_reset(processor: *mut DbProcessor) -> DbSt
         // SAFETY: The caller owns a live handle returned by db_processor_create.
         unsafe {
             (*processor).processor.reset();
+            (*processor).input_peak = [0.0; 2];
+            (*processor).output_peak = [0.0; 2];
             (*processor).faulted = false;
         }
         DbStatus::Ok
@@ -168,18 +187,18 @@ pub unsafe extern "C" fn db_processor_destroy(processor: *mut DbProcessor) -> Db
     })
 }
 
-fn ffi_guard(operation: impl FnOnce() -> DbStatus) -> DbStatus {
+pub(super) fn ffi_guard(operation: impl FnOnce() -> DbStatus) -> DbStatus {
     catch_unwind(AssertUnwindSafe(operation)).unwrap_or(DbStatus::Panic)
 }
 
-fn runtime_plan_version_is_compatible(plan: &DbRuntimePlanV1) -> bool {
+pub(super) fn runtime_plan_version_is_compatible(plan: &DbRuntimePlanV1) -> bool {
     plan.abi_version == DB_ABI_VERSION
         && plan.plan_schema_version == DB_PLAN_SCHEMA_VERSION
         && plan.processor_version == DB_PROCESSOR_VERSION
         && plan.reserved == 0
 }
 
-fn supported_sample_rate(sample_rate_hz: f64) -> Option<u32> {
+pub(super) fn supported_sample_rate(sample_rate_hz: f64) -> Option<u32> {
     [44_100_u32, 48_000, 88_200, 96_000, 192_000]
         .into_iter()
         .find(|&supported| sample_rate_hz == supported as f64)
