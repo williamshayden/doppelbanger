@@ -1,7 +1,0 @@
-{
-  "extends": "windows-native-valid.json",
-  "wsl": true,
-  "wsl_distro_name": "Ubuntu-24.04",
-  "wsl_interop": "/run/WSL/123_interop",
-  "expected_code": "DBDOC_WSL_FORBIDDEN"
-}

@@ -5,4 +5,5 @@
 tmp/
 var/
 build/
-.worktrees/
+.vs/
+CMakeUserPresets.json

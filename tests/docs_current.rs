@@ -124,11 +124,6 @@ fn windows_distribution_is_native_and_container_free() {
         "## Companion Runtime Packaging",
         "## Thread Ownership",
     );
-    let locked_profiles = markdown_section(
-        workstation,
-        "## Locked profiles",
-        "## Native and container boundary",
-    );
 
     for required in [
         "does not require WSL",
@@ -143,17 +138,19 @@ fn windows_distribution_is_native_and_container_free() {
         );
     }
     for required in [
-        "Native build tools use `HeadlessVst3`",
-        "only the specifically requested validator is resolved and required",
-        "Docker commands use `StatePlaneIntegration` and never import the Visual Studio environment",
-        "`node`, `npm`, and `npx` are rejected with `DBDOC_TOOL_PROFILE_REQUIRED`",
-        "Only `Compatibility` inventories Node, WebView2, and Ableton",
-        "A successful `HeadlessVst3` result is independent of Docker state",
-        "`DBDOC_DOCKER_STOPPED` is a `StatePlaneIntegration` diagnostic",
+        "native Windows PowerShell",
+        "Customers use the product installer",
+        "Visual Studio Build Tools, Rust, CMake, and Ninja normally",
+        "`doctor` is read-only",
+        "`configure` creates the native build files with Ninja",
+        "DBDEV_WINDOWS_REQUIRED",
+        "DBDEV_WSL_FORBIDDEN",
+        "DBDEV_TOOL_MISSING",
+        "DBDEV_WRONG_RUST_HOST",
     ] {
         assert!(
-            locked_profiles.contains(required),
-            "missing locked-profile contract: {required}"
+            workstation.contains(required),
+            "missing native dispatcher contract: {required}"
         );
     }
     let pd031 = decisions
@@ -185,21 +182,6 @@ fn windows_distribution_is_native_and_container_free() {
         "## Task 11: Build the production UI-NONE VST3 over the Rust processor",
         "## Task 12: Integrate production state with VST3 lifecycle and fixture restore",
     );
-    let task3 = markdown_section(
-        roadmap,
-        "## Task 3: Pin the state-plane containers and prove the existing ABI with MSVC",
-        "## Task 4: Pin iPlug2/VST3 SDK and build Rust through offline CMake",
-    );
-    for required in [
-        "& .\\scripts\\doctor_windows.ps1 -Profile HeadlessVst3",
-        "& .\\scripts\\doctor_windows.ps1 -Profile StatePlaneIntegration",
-        "never infer Docker requirements from Cargo arguments",
-    ] {
-        assert!(
-            task3.contains(required),
-            "missing Task 3 integration-harness contract: {required}"
-        );
-    }
     for required in [
         "reusable recursive dependency-closure gate",
         "every native executable and DLL",

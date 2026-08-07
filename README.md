@@ -34,6 +34,18 @@ Current development requires:
 
 AlbumDB setup additionally needs `curl`, `unzip`, roughly 5.3 GB of download space, and space for extracted audio and renders. Future plugin work also requires CMake, platform build tools, and the pinned iPlug2 dependency.
 
+## Windows development
+
+Customers use the product installer; they never need a developer toolchain. Windows developers install Visual Studio Build Tools, Rust, CMake, and Ninja through their normal installers, then use native PowerShell from the repository:
+
+```powershell
+.\scripts\dev.ps1 -Task doctor
+.\scripts\dev.ps1 -Task format
+.\scripts\dev.ps1 -Task test
+```
+
+The dispatcher also provides `configure`, `build`, and `validate` tasks for the native VST3 work that follows. It only checks and runs existing native tools; it does not install or configure the workstation. See [Native Windows Workstation](docs/WINDOWS_WORKSTATION.md) for the complete task reference.
+
 ## Current Developer Proof
 
 The current source tree temporarily exposes `doppelbanger master`, `doppelbanger worker`, and `doppelbanger benchmark` for automation and validation. These are not installed product interfaces and will move behind repository tooling as the plugin path takes over.
