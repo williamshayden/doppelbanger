@@ -9,6 +9,7 @@ $prepareIPlug2Path = Join-Path $repoRoot 'cmake\PrepareIPlug2.cmake'
 $webViewHeaderPath = Join-Path $repoRoot 'third_party\iPlug2\IPlug\Extras\WebView\IPlugWebView.h'
 $cmakePath = Join-Path $repoRoot 'CMakeLists.txt'
 $configPath = Join-Path $repoRoot 'plugin\config.h'
+$workflowPath = Join-Path $repoRoot '.github\workflows\windows-vst3.yml'
 
 $script:passed = 0
 function Assert-True {
@@ -66,6 +67,29 @@ Assert-Matches $cmake 'copy_directory\s+"?\$\{DOPPELBANGER_UI_DIST_DIR\}"?\s+"?\
 Assert-Matches $cmake 'file\s*\(GLOB_RECURSE\s+DOPPELBANGER_UI_SOURCES\s+CONFIGURE_DEPENDS\s+"\$\{DOPPELBANGER_UI_DIR\}/src/\*"\s*\)' 'the frontend source glob is restricted to plugin/ui/src'
 Assert-True ($cmake -notmatch 'GLOB_RECURSE[^)]*\$\{DOPPELBANGER_UI_DIR\}/(?:index\.html|package\.json|package-lock\.json|vite\.config\.ts)') 'the frontend dependency scan cannot recurse through dist or node_modules'
 Assert-True ($cmake -notmatch '(?i)(BinaryData|AddCustomServer|http://|localhost|dev-server|zip)') 'the native package path contains no resource server, archive, or dev fallback'
+
+Assert-True (Test-Path -LiteralPath $workflowPath -PathType Leaf) 'the Windows VST3 workflow exists'
+$workflow = Get-Content -LiteralPath $workflowPath -Raw
+$evidenceStepMatch = [regex]::Match(
+    $workflow,
+    '(?ms)^[ ]{6}- name:\s*Prepare sanitized CI evidence\s*\r?\n.*?(?=^[ ]{6}- name:|\z)')
+Assert-True $evidenceStepMatch.Success 'the workflow retains the dedicated sanitized-evidence step'
+$evidenceStep = $evidenceStepMatch.Value
+Assert-True ($evidenceStep -notmatch '\$bundleFiles\.Count\s+-ne\s+1|bundle must contain only the exact x86_64-win module') 'the CI evidence gate does not retain the stale one-file-only bundle assumption'
+Assert-Matches $evidenceStep '\$module\s*=\s*Join-Path\s+\$bundle\s+''Contents\\x86_64-win\\Doppelbanger\.vst3''' 'the CI evidence gate identifies the exact x64 VST3 module'
+Assert-Matches $evidenceStep '\$webRoot\s*=\s*Join-Path\s+\$bundle\s+''Contents\\Resources\\web''' 'the CI evidence gate identifies the exact packaged web root'
+Assert-Matches $evidenceStep 'Test-Path\s+-LiteralPath\s+\$module\s+-PathType\s+Leaf' 'the CI evidence gate requires the exact VST3 module'
+Assert-Matches $evidenceStep 'Test-Path\s+-LiteralPath\s+\$webRoot\s+-PathType\s+Container' 'the CI evidence gate requires the exact packaged web root'
+Assert-Matches $evidenceStep '\$webAssetContract\s*=\s*Join-Path\s+\$repo\s+''tests\\tooling\\web_asset_contract\.ps1''' 'the CI evidence gate resolves the existing closed-world WebAssetContract'
+Assert-Matches $evidenceStep 'powershell\.exe\s+-NoProfile\s+-File\s+\$webAssetContract\s+-WebRoot\s+\$webRoot\s*\r?\n\s*if\s*\(\$LASTEXITCODE\s+-ne\s+0\)\s*\{\s*exit\s+\$LASTEXITCODE\s*\}' 'the CI evidence gate runs WebAssetContract against the exact web root and propagates failure'
+Assert-Matches $evidenceStep '\$moduleFullPath\s*=\s*\[System\.IO\.Path\]::GetFullPath\(\$module\)' 'the CI evidence allowlist normalizes the exact module path'
+Assert-Matches $evidenceStep '\$webRootFullPath\s*=\s*\[System\.IO\.Path\]::GetFullPath\(\$webRoot\)\.TrimEnd\(' 'the CI evidence allowlist normalizes and trims the exact web root'
+Assert-Matches $evidenceStep '\$webRootPrefix\s*=\s*\$webRootFullPath\s*\+\s*\[System\.IO\.Path\]::DirectorySeparatorChar' 'the CI evidence allowlist adds a trailing separator to prevent sibling-prefix bypasses'
+Assert-Matches $evidenceStep '\$bundleFiles\s*=\s*@\(Get-ChildItem\s+-LiteralPath\s+\$bundle\s+-Recurse\s+-File\)' 'the CI evidence allowlist enumerates every bundle file'
+Assert-Matches $evidenceStep '\[string\]::Equals\(\$fileFullPath,\s*\$moduleFullPath,\s*\[StringComparison\]::OrdinalIgnoreCase\)' 'the CI evidence allowlist admits only the exact module using Windows-safe comparison'
+Assert-Matches $evidenceStep '\$fileFullPath\.StartsWith\(\$webRootPrefix,\s*\[StringComparison\]::OrdinalIgnoreCase\)' 'the CI evidence allowlist admits descendants only beneath the separator-terminated web root'
+Assert-Matches $evidenceStep '\$webFileCount\s*=\s*0[\s\S]*?\$webFileCount\+\+[\s\S]*?if\s*\(\$webFileCount\s+-eq\s+0\)\s*\{[\s\S]*?throw' 'the CI evidence gate explicitly rejects a bundle with no web files'
+Assert-Matches $evidenceStep 'throw\s+"unexpected VST3 bundle file:' 'the CI evidence allowlist rejects every file outside the exact module and validated web root'
 
 $config = Get-Content -LiteralPath $configPath -Raw
 foreach ($requiredDefinition in @(

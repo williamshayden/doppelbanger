@@ -122,6 +122,8 @@ jobs:
           $destination = Join-Path $source 'ci'
           $bundle = Join-Path $repo 'build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3'
           $module = Join-Path $bundle 'Contents\x86_64-win\Doppelbanger.vst3'
+          $webRoot = Join-Path $bundle 'Contents\Resources\web'
+          $webAssetContract = Join-Path $repo 'tests\tooling\web_asset_contract.ps1'
           $reports = @(
             'rust-tests.txt',
             'ctest.txt',
@@ -132,9 +134,32 @@ jobs:
           if (-not (Test-Path -LiteralPath $module -PathType Leaf)) {
             throw "missing exact VST3 module: $module"
           }
+          if (-not (Test-Path -LiteralPath $webRoot -PathType Container)) {
+            throw "missing exact VST3 web root: $webRoot"
+          }
+          powershell.exe -NoProfile -File $webAssetContract -WebRoot $webRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $moduleFullPath = [System.IO.Path]::GetFullPath($module)
+          $webRootFullPath = [System.IO.Path]::GetFullPath($webRoot).TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar
+          )
+          $webRootPrefix = $webRootFullPath + [System.IO.Path]::DirectorySeparatorChar
           $bundleFiles = @(Get-ChildItem -LiteralPath $bundle -Recurse -File)
-          if ($bundleFiles.Count -ne 1 -or $bundleFiles[0].FullName -cne $module) {
-            throw 'the unsigned VST3 bundle must contain only the exact x86_64-win module'
+          $webFileCount = 0
+          foreach ($bundleFile in $bundleFiles) {
+            $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)
+            if ([string]::Equals($fileFullPath, $moduleFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+              continue
+            }
+            if ($fileFullPath.StartsWith($webRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+              $webFileCount++
+              continue
+            }
+            throw "unexpected VST3 bundle file: $fileFullPath"
+          }
+          if ($webFileCount -eq 0) {
+            throw 'the unsigned VST3 bundle must contain validated web files'
           }
           foreach ($report in $reports) {
             $reportPath = Join-Path $source $report
