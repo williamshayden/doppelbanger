@@ -1,0 +1,71 @@
+include_guard(GLOBAL)
+
+include(FetchContent)
+
+set(DOPPELBANGER_WIL_COMMIT "f0c6a81c0c9a4b23b6801f40554b8bec425a83b4")
+set(DOPPELBANGER_WEBVIEW2_VERSION "1.0.2903.40")
+set(DOPPELBANGER_WEBVIEW2_NUGET_SHA256
+  "ef128016dd1e51c59178c827ed5b8aa3322c57afa8675d930f8109505542ad74")
+set(DOPPELBANGER_WEBVIEW2_NUGET_URL
+  "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2903.40")
+
+function(doppelbanger_prepare_webview)
+  if(NOT WIN32)
+    message(FATAL_ERROR "WebView2 packaging requires native Windows CMake")
+  endif()
+
+  set(DOPPELBANGER_WEBVIEW2_DIR "${CMAKE_BINARY_DIR}/_deps/webview2")
+  set(DOPPELBANGER_WEBVIEW2_PACKAGE
+    "${DOPPELBANGER_WEBVIEW2_DIR}/Microsoft.Web.WebView2.1.0.2903.40.nupkg")
+  file(MAKE_DIRECTORY "${DOPPELBANGER_WEBVIEW2_DIR}")
+
+  if(EXISTS "${DOPPELBANGER_WEBVIEW2_PACKAGE}")
+    file(SHA256 "${DOPPELBANGER_WEBVIEW2_PACKAGE}"
+      DOPPELBANGER_WEBVIEW2_ACTUAL_SHA256)
+    if(NOT DOPPELBANGER_WEBVIEW2_ACTUAL_SHA256 STREQUAL
+       DOPPELBANGER_WEBVIEW2_NUGET_SHA256)
+      message(FATAL_ERROR
+        "WebView2 NuGet hash mismatch for existing package: "
+        "expected ${DOPPELBANGER_WEBVIEW2_NUGET_SHA256}, got "
+        "${DOPPELBANGER_WEBVIEW2_ACTUAL_SHA256}")
+    endif()
+  else()
+    file(DOWNLOAD
+      "${DOPPELBANGER_WEBVIEW2_NUGET_URL}"
+      "${DOPPELBANGER_WEBVIEW2_PACKAGE}"
+      EXPECTED_HASH "SHA256=ef128016dd1e51c59178c827ed5b8aa3322c57afa8675d930f8109505542ad74"
+      STATUS DOPPELBANGER_WEBVIEW2_DOWNLOAD_STATUS
+      SHOW_PROGRESS)
+    list(GET DOPPELBANGER_WEBVIEW2_DOWNLOAD_STATUS 0
+      DOPPELBANGER_WEBVIEW2_DOWNLOAD_CODE)
+    if(NOT DOPPELBANGER_WEBVIEW2_DOWNLOAD_CODE EQUAL 0)
+      message(FATAL_ERROR "WebView2 NuGet download failed")
+    endif()
+    file(SHA256 "${DOPPELBANGER_WEBVIEW2_PACKAGE}"
+      DOPPELBANGER_WEBVIEW2_ACTUAL_SHA256)
+    if(NOT DOPPELBANGER_WEBVIEW2_ACTUAL_SHA256 STREQUAL
+       DOPPELBANGER_WEBVIEW2_NUGET_SHA256)
+      message(FATAL_ERROR "WebView2 NuGet download did not match its approved SHA-256")
+    endif()
+  endif()
+
+  file(REMOVE_RECURSE
+    "${DOPPELBANGER_WEBVIEW2_DIR}/build"
+    "${DOPPELBANGER_WEBVIEW2_DIR}/_rels")
+  file(ARCHIVE_EXTRACT
+    INPUT "${DOPPELBANGER_WEBVIEW2_PACKAGE}"
+    DESTINATION "${DOPPELBANGER_WEBVIEW2_DIR}")
+  if(NOT EXISTS "${DOPPELBANGER_WEBVIEW2_DIR}/build/native/include/WebView2.h" OR
+     NOT EXISTS "${DOPPELBANGER_WEBVIEW2_DIR}/build/native/x64/WebView2LoaderStatic.lib")
+    message(FATAL_ERROR "Verified WebView2 NuGet package is missing required x64 static-loader inputs")
+  endif()
+
+  set(WIL_BUILD_PACKAGING OFF CACHE BOOL "" FORCE)
+  set(WIL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    wil
+    GIT_REPOSITORY https://github.com/microsoft/wil.git
+    GIT_TAG f0c6a81c0c9a4b23b6801f40554b8bec425a83b4
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(wil)
+endfunction()

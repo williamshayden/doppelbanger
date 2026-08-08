@@ -1,0 +1,28 @@
+{
+  "node": "24.18.1",
+  "npm": "11.16.0",
+  "wil": {
+    "repository": "https://github.com/microsoft/wil.git",
+    "commit": "f0c6a81c0c9a4b23b6801f40554b8bec425a83b4"
+  },
+  "webview2": {
+    "version": "1.0.2903.40",
+    "url": "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2903.40",
+    "sha256": "ef128016dd1e51c59178c827ed5b8aa3322c57afa8675d930f8109505542ad74"
+  },
+  "react": "19.2.8",
+  "react-dom": "19.2.8",
+  "vite": "8.2.1",
+  "typescript": "7.0.2",
+  "vitest": "4.1.10",
+  "jsdom": "30.0.1",
+  "@vitejs/plugin-react": "6.0.5",
+  "@testing-library/react": "16.3.2",
+  "@testing-library/jest-dom": "7.0.0",
+  "@testing-library/user-event": "14.6.3",
+  "@types/react": "19.2.18",
+  "@types/react-dom": "19.2.4",
+  "@types/node": "26.2.0",
+  "json-schema-to-typescript": "15.0.4",
+  "@playwright/test": "1.62.1"
+}

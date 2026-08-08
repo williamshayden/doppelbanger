@@ -28,8 +28,9 @@ function Assert-Equal {
 
 function New-NativeToolFixture {
     $tools = @{}
-    foreach ($name in @('rustc', 'cargo', 'cmake', 'ctest', 'ninja', 'cl', 'git', 'powershell')) {
-        $tools[$name] = "C:\doppelbanger-test-tools\$name.exe"
+    foreach ($name in @('rustc', 'cargo', 'cmake', 'ctest', 'ninja', 'cl', 'git', 'powershell', 'node', 'npm')) {
+        $extension = if ($name -eq 'npm') { 'cmd' } else { 'exe' }
+        $tools[$name] = "C:\doppelbanger-test-tools\$name.$extension"
     }
     return $tools
 }
@@ -70,10 +71,21 @@ function New-CommandResolver {
 function New-CommandRunner {
     param([System.Collections.Generic.List[object]]$Invocations)
     return {
-        param([string]$Path, [string[]]$Arguments)
-        $Invocations.Add([pscustomobject]@{ Path = $Path; Arguments = @($Arguments) })
+        param([string]$Path, [string[]]$Arguments, [string]$WorkingDirectory)
+        $Invocations.Add([pscustomobject]@{
+            Path = $Path
+            Arguments = @($Arguments)
+            WorkingDirectory = $WorkingDirectory
+            PlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+        })
         if ($Path.EndsWith('rustc.exe', [StringComparison]::OrdinalIgnoreCase)) {
             return [pscustomobject]@{ Output = "rustc 1.97.1`nhost: x86_64-pc-windows-msvc"; ExitCode = 0 }
+        }
+        if ($Path.EndsWith('node.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Output = 'v24.18.1'; ExitCode = 0 }
+        }
+        if ($Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Output = '11.16.0'; ExitCode = 0 }
         }
         return [pscustomobject]@{ Output = ''; ExitCode = 0 }
     }.GetNewClosure()
@@ -146,7 +158,8 @@ function Invoke-DevFixture {
         [string[]]$ProcessNames = @('powershell.exe', 'cmd.exe', 'services.exe', 'wininit.exe'),
         [hashtable]$Tools = (New-NativeToolFixture),
         [bool]$IsWindows = $true,
-        [object]$Platform
+        [object]$Platform,
+        [scriptblock]$CommandRunner
     )
 
     $invocations = [System.Collections.Generic.List[object]]::new()
@@ -158,7 +171,7 @@ function Invoke-DevFixture {
             IsWindows = $IsWindows
             PlatformLookup = (New-PlatformLookup $(if ($null -ne $Platform) { $Platform } else { New-PlatformFixture }))
             CommandResolver = (New-CommandResolver $Tools)
-            CommandRunner = (New-CommandRunner $invocations)
+            CommandRunner = $(if ($CommandRunner) { $CommandRunner } else { New-CommandRunner $invocations })
         }
         $null = & $devPath @parameters
         return [pscustomobject]@{ Error = ''; Invocations = $invocations; ProcessFixture = $processFixture }
@@ -348,7 +361,7 @@ catch {
 }
 Assert-True ([string]::IsNullOrEmpty($nativeRootError)) "doctor accepts a complete native chain ending at wininit.exe when its historical parent no longer resolves ($nativeRootError)"
 Assert-Equal (($nativeRootLookups | ForEach-Object { [string]$_ }) -join ',') (($nativeRootProcessIds[0..5] | ForEach-Object { [string]$_ }) -join ',') 'doctor stops ancestry inspection after recording wininit.exe'
-Assert-True ($nativeRootInvocations.Count -eq 1) 'native wininit-root ancestry only probes rustc host information'
+Assert-True ($nativeRootInvocations.Count -eq 3) 'native wininit-root ancestry probes Rust, Node, and npm versions'
 
 $missingIntermediateParentId = $PID + 808
 $missingIntermediateLookups = [System.Collections.Generic.List[int]]::new()
@@ -391,7 +404,7 @@ catch {
 }
 Assert-True ([string]::IsNullOrEmpty($processLookupError) -and $PID -eq $pidBeforeProcessLookup) "doctor accepts an injected native process lookup without overwriting the automatic process identifier ($processLookupError)"
 Assert-Equal (($automaticProcessFixture.Lookups | ForEach-Object { [string]$_ }) -join ',') (($automaticProcessFixture.ProcessIds | ForEach-Object { [string]$_ }) -join ',') 'doctor inspects the complete native chain from the automatic process identifier through wininit.exe'
-Assert-True ($lookupInvocations.Count -eq 1) 'complete injected native ancestry only probes rustc host information'
+Assert-True ($lookupInvocations.Count -eq 3) 'complete injected native ancestry probes Rust, Node, and npm versions'
 
 $missingTools = New-NativeToolFixture
 $missingTools.Remove('cl')
@@ -432,6 +445,12 @@ try {
             if ($Path.EndsWith('rustc.exe', [StringComparison]::OrdinalIgnoreCase)) {
                 return [pscustomobject]@{ Output = "rustc 1.97.1`nhost: x86_64-pc-windows-msvc"; ExitCode = 0 }
             }
+            if ($Path.EndsWith('node.exe', [StringComparison]::OrdinalIgnoreCase)) {
+                return [pscustomobject]@{ Output = 'v24.18.1'; ExitCode = 0 }
+            }
+            if ($Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase)) {
+                return [pscustomobject]@{ Output = '11.16.0'; ExitCode = 0 }
+            }
             return [pscustomobject]@{ Output = 'simulated native command failure'; ExitCode = 23 }
         }.GetNewClosure() | ForEach-Object { $nonzeroRunnerOutput.Add([string]$_) }
     $nonzeroRunnerError = ''
@@ -442,15 +461,82 @@ catch {
 Assert-Contains $nonzeroRunnerError 'DBDEV_TASK_FAILED' 'a nonzero command-runner result retains the stable dispatcher failure code'
 Assert-Contains $nonzeroRunnerError 'code 23' 'a nonzero command-runner result retains the exact process exit code'
 Assert-Contains ($nonzeroRunnerOutput -join "`n") 'simulated native command failure' 'a nonzero task emits captured process diagnostics before failing'
-Assert-True ($nonzeroRunnerInvocations.Count -eq 2) 'the dispatcher stops after the first nonzero task process result'
+Assert-True ($nonzeroRunnerInvocations.Count -eq 4) 'the dispatcher stops after the first nonzero task process result'
 
 foreach ($task in @('format', 'test', 'configure', 'build', 'validate')) {
     $result = Invoke-DevFixture -Task $task
     Assert-True ([string]::IsNullOrEmpty($result.Error)) "$task succeeds with checked native tools"
     Assert-True ($result.Invocations.Count -gt 0) "$task delegates to a checked executable"
     foreach ($invocation in $result.Invocations) {
-        Assert-True ($invocation.Path -match '^C:\\doppelbanger-test-tools\\.+\.exe$') "$task delegates only to checked native executables"
+        Assert-True ($invocation.Path -match '^C:\\doppelbanger-test-tools\\.+\.(?:exe|cmd)$') "$task delegates only to checked native executables"
     }
+}
+
+$uiTestResult = Invoke-DevFixture -Task ui-test
+$uiTestNpmInvocations = @($uiTestResult.Invocations | Where-Object { $_.Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) })
+Assert-True ([string]::IsNullOrEmpty($uiTestResult.Error)) 'ui-test succeeds with checked native tools'
+Assert-Equal $uiTestNpmInvocations.Count 2 'ui-test verifies npm and then runs the editor check'
+Assert-ArgumentVector $uiTestNpmInvocations[0] @('--version') 'ui-test verifies the exact checked npm executable'
+Assert-ArgumentVector $uiTestNpmInvocations[1] @('run', 'check') 'ui-test routes only the checked npm executable to the editor check'
+Assert-Equal $uiTestNpmInvocations[1].WorkingDirectory (Join-Path $repoRoot 'plugin\ui') 'ui-test runs the editor check from plugin/ui'
+$uiTestNodeInvocations = @($uiTestResult.Invocations | Where-Object { $_.Path.EndsWith('node.exe', [StringComparison]::OrdinalIgnoreCase) })
+Assert-Equal $uiTestNodeInvocations.Count 1 'ui-test verifies the exact checked native Node executable'
+Assert-ArgumentVector $uiTestNodeInvocations[0] @('--version') 'ui-test verifies the required Node version'
+
+$savedPlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+try {
+    [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'preserved-prior-value', 'Process')
+    $uiInstallResult = Invoke-DevFixture -Task ui-install
+    $uiInstallNpmInvocations = @($uiInstallResult.Invocations | Where-Object { $_.Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) })
+    Assert-True ([string]::IsNullOrEmpty($uiInstallResult.Error)) 'ui-install succeeds with checked native tools'
+    Assert-Equal $uiInstallNpmInvocations.Count 2 'ui-install verifies npm and then installs the editor dependencies'
+    Assert-ArgumentVector $uiInstallNpmInvocations[0] @('--version') 'ui-install verifies the exact checked npm executable'
+    Assert-ArgumentVector $uiInstallNpmInvocations[1] @('ci') 'ui-install routes only the checked npm executable to the exact dependency install'
+    Assert-Equal $uiInstallNpmInvocations[1].WorkingDirectory (Join-Path $repoRoot 'plugin\ui') 'ui-install runs the dependency install from plugin/ui'
+    Assert-Equal $uiInstallNpmInvocations[1].PlaywrightSkipBrowserDownload '1' 'ui-install sets PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD to the documented exact value for npm ci'
+    Assert-Equal ([Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')) 'preserved-prior-value' 'ui-install restores the prior Playwright download environment after completion'
+}
+finally {
+    [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $savedPlaywrightSkipBrowserDownload, 'Process')
+}
+
+$savedCleanupPlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+try {
+    [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $null, 'Process')
+    $absentUiInstallResult = Invoke-DevFixture -Task ui-install
+    $absentUiInstallNpmInvocations = @($absentUiInstallResult.Invocations | Where-Object { $_.Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) })
+    Assert-True ([string]::IsNullOrEmpty($absentUiInstallResult.Error)) 'ui-install succeeds when the Playwright download environment is initially absent'
+    Assert-Equal $absentUiInstallNpmInvocations[1].PlaywrightSkipBrowserDownload '1' 'ui-install exposes the documented value during npm ci when no prior value exists'
+    Assert-True ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process'))) 'ui-install restores an initially absent Playwright download environment after success'
+
+    $failingUiInstallInvocations = [System.Collections.Generic.List[object]]::new()
+    [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'preserved-after-failure', 'Process')
+    $failingUiInstallResult = Invoke-DevFixture -Task ui-install -CommandRunner {
+        param([string]$Path, [string[]]$Arguments, [string]$WorkingDirectory)
+        $failingUiInstallInvocations.Add([pscustomobject]@{
+            Path = $Path
+            Arguments = @($Arguments)
+            WorkingDirectory = $WorkingDirectory
+            PlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+        })
+        if ($Path.EndsWith('rustc.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Output = "rustc 1.97.1" + [Environment]::NewLine + "host: x86_64-pc-windows-msvc"; ExitCode = 0 }
+        }
+        if ($Path.EndsWith('node.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Output = 'v24.18.1'; ExitCode = 0 }
+        }
+        if ($Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) -and $Arguments.Count -eq 1 -and $Arguments[0] -ceq 'ci') {
+            return [pscustomobject]@{ Output = 'simulated npm ci failure'; ExitCode = 31 }
+        }
+        return [pscustomobject]@{ Output = '11.16.0'; ExitCode = 0 }
+    }.GetNewClosure()
+    $failingUiInstallNpmInvocations = @($failingUiInstallInvocations | Where-Object { $_.Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) })
+    Assert-Contains $failingUiInstallResult.Error 'DBDEV_TASK_FAILED' 'ui-install propagates a checked npm ci failure'
+    Assert-Equal $failingUiInstallNpmInvocations[1].PlaywrightSkipBrowserDownload '1' 'ui-install exposes the documented value during a failing npm ci'
+    Assert-Equal ([Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')) 'preserved-after-failure' 'ui-install restores the prior Playwright download environment after npm ci failure'
+}
+finally {
+    [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $savedCleanupPlaywrightSkipBrowserDownload, 'Process')
 }
 
 $releasePreset = 'windows-msvc-x64-release'
@@ -475,7 +561,14 @@ Assert-ArgumentVector $configureCmakeInvocations[1] $validatorConfigureArguments
 $buildResult = Invoke-DevFixture -Task build
 $buildCmakeInvocations = @($buildResult.Invocations | Where-Object { $_.Path.EndsWith('cmake.exe', [StringComparison]::OrdinalIgnoreCase) })
 $buildCtestInvocations = @($buildResult.Invocations | Where-Object { $_.Path.EndsWith('ctest.exe', [StringComparison]::OrdinalIgnoreCase) })
+$buildNpmInvocations = @($buildResult.Invocations | Where-Object { $_.Path.EndsWith('npm.cmd', [StringComparison]::OrdinalIgnoreCase) })
 Assert-True ([string]::IsNullOrEmpty($buildResult.Error)) 'build succeeds with checked native tools'
+Assert-Equal $buildNpmInvocations.Count 3 'build verifies npm and builds the frontend before native targets'
+Assert-ArgumentVector $buildNpmInvocations[1] @('ci', '--no-audit', '--no-fund') 'build installs the locked frontend dependencies without audit or funding network work'
+Assert-ArgumentVector $buildNpmInvocations[2] @('run', 'build') 'build creates the production frontend before the module build'
+Assert-Equal $buildNpmInvocations[1].WorkingDirectory (Join-Path $repoRoot 'plugin\ui') 'build installs the frontend from plugin/ui'
+Assert-Equal $buildNpmInvocations[2].WorkingDirectory (Join-Path $repoRoot 'plugin\ui') 'build builds the frontend from plugin/ui'
+Assert-Equal $buildNpmInvocations[1].PlaywrightSkipBrowserDownload '1' 'build suppresses Playwright browser downloads during npm ci'
 Assert-Equal $buildCmakeInvocations.Count 2 'build builds the product preset and validator target'
 Assert-ArgumentVector $buildCmakeInvocations[0] @('--build', '--preset', $releasePreset) 'build uses the committed Release product preset'
 Assert-ArgumentVector $buildCmakeInvocations[1] @('--build', $validatorBuildTree, '--target', 'validator') 'build only builds the pinned validator target'
@@ -485,12 +578,18 @@ Assert-ArgumentVector $buildCtestInvocations[0] @('--preset', $releasePreset) 'b
 $validateResult = Invoke-DevFixture -Task validate
 $validatePowerShellInvocations = @($validateResult.Invocations | Where-Object { $_.Path.EndsWith('powershell.exe', [StringComparison]::OrdinalIgnoreCase) })
 $expectedWrapperPath = Join-Path $repoRoot 'tests\plugin\validate_vst3.ps1'
+$expectedAssetContractPath = Join-Path $repoRoot 'tests\tooling\web_asset_contract.ps1'
 $expectedValidatorPath = Join-Path $repoRoot 'build\windows-vst3-validator\bin\validator.exe'
 $expectedPluginPath = Join-Path $repoRoot 'build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3'
+$expectedWebRoot = Join-Path $expectedPluginPath 'Contents\Resources\web'
 $expectedEvidencePath = Join-Path $repoRoot 'var\validation\native-foundation'
 Assert-True ([string]::IsNullOrEmpty($validateResult.Error)) 'validate succeeds with checked native tools'
-Assert-Equal $validatePowerShellInvocations.Count 1 'validate invokes the tracked wrapper through checked native PowerShell'
+Assert-Equal $validatePowerShellInvocations.Count 2 'validate checks packaged web assets before invoking the tracked validator wrapper'
 Assert-ArgumentVector $validatePowerShellInvocations[0] @(
+    '-NoProfile', '-File', $expectedAssetContractPath,
+    '-WebRoot', $expectedWebRoot
+) 'validate checks the exact packaged VST3 web root before validator launch'
+Assert-ArgumentVector $validatePowerShellInvocations[1] @(
     '-NoProfile', '-File', $expectedWrapperPath,
     '-ValidatorPath', $expectedValidatorPath,
     '-PluginPath', $expectedPluginPath,

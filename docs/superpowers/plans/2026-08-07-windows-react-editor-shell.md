@@ -4,9 +4,11 @@
 
 **Goal:** Ship a Windows x64 Doppelbanger VST3 whose packaged React editor opens in Ableton, controls the existing processor through host automation, preserves saved-state and class-ID compatibility, and is installable from `Doppelbanger-Setup.exe`.
 
+> **Paused checkpoint — 2026-08-07:** Tasks 1–3 are review-clean and hosted-green. Task 4 is implemented at commit `f266f4b` but still requires its independent task review, hosted CI, and a live editor-open smoke; do not claim the UI issue fixed before that smoke passes. Resume by reviewing Task 4 from base `c131644`, then proceed to the Windows installer (Task 5) and Ableton/demo release evidence (Task 6). No development processes need to remain running while paused.
+
 **Architecture:** Keep the validated Rust processor and iPlug2 VST3 component intact. Add a pure React/Vite surface and a separately testable bounded C++ bridge, then connect them through iPlug2's `WebViewEditorDelegate` using local WebView2 resources only. Build a conventional Inno Setup installer from the already validated bundle; WebView2 is the only end-user editor prerequisite and is installed through Microsoft's signed Evergreen bootstrapper only when missing and approved by the user.
 
-**Tech Stack:** Rust 1.97.1 MSVC, C++17/MSVC 14.44, CMake 4.4.2, Ninja 1.13.2, iPlug2 at `5c2df9dce3f5258acfeff3846a6a9563f382212c`, WebView2 SDK `1.0.2903.40`, WIL at `f0c6a81c0c9a4b23b6801f40554b8bec425a83b4`, Node.js `24.18.1` x64, npm `11.15.0`, React `19.2.8`, Vite `8.2.1`, TypeScript `7.0.2`, Vitest `4.1.10`, Playwright `1.62.1`, Inno Setup `6.7.1`.
+**Tech Stack:** Rust 1.97.1 MSVC, C++17/MSVC 14.44, CMake 4.4.2, Ninja 1.13.2, iPlug2 at `5c2df9dce3f5258acfeff3846a6a9563f382212c`, WebView2 SDK `1.0.2903.40`, WIL at `f0c6a81c0c9a4b23b6801f40554b8bec425a83b4`, Node.js `24.18.1` x64, npm `11.16.0`, React `19.2.8`, Vite `8.2.1`, TypeScript `7.0.2`, Vitest `4.1.10`, Playwright `1.62.1`, Inno Setup `6.7.1`.
 
 **Documented asset route:** Follow Steinberg's Windows VST3 bundle convention and iPlug2's WebView2 folder-mapping implementation: Vite emits relative, content-hashed files into `Contents/Resources/web`, and Release loads them through the local `https://iplug.example/` virtual origin. JUCE's embedded ZIP/BinaryData resource-provider example confirms the broader local-Release-assets convention but is not copied into iPlug2 as a second serving layer. Vite's `base: './'` is the documented embedded-deployment setting. Primary-source rationale and links are recorded in `docs/superpowers/specs/2026-08-07-windows-react-editor-shell-design.md`.
 
@@ -66,9 +68,9 @@
 - Produces: `window.__doppelbangerReceive(message)` for native-to-React envelopes and consumes iPlug2's injected `window.IPlugSendMsg(message)` transport.
 - Produces: a deterministic `plugin/ui/dist` tree with relative URLs and no source maps.
 
-- [ ] **Step 1: Provision exact native Node without changing the product runtime.** Install the official `node-v24.18.1-win-x64.zip` beneath `C:\Users\William\AppData\Local\Programs\doppelbanger-devtools\node-v24.18.1-win-x64`, verify SHA-256 `ec56b84a7551893ab2324ebdfdc4ab974a63b4781162600b68a1293cc3e53765`, and add that directory only to the ignored native task runner's PATH. Confirm native `node.exe --version` prints `v24.18.1` and native `npm.cmd --version` prints `11.15.0`.
+- [ ] **Step 1: Provision exact native Node without changing the product runtime.** Install the official `node-v24.18.1-win-x64.zip` beneath `C:\Users\William\AppData\Local\Programs\doppelbanger-devtools\node-v24.18.1-win-x64`, verify SHA-256 `ec56b84a7551893ab2324ebdfdc4ab974a63b4781162600b68a1293cc3e53765`, and add that directory only to the ignored native task runner's PATH. Confirm native `node.exe --version` prints `v24.18.1` and its bundled native `npm.cmd --version` prints `11.16.0`.
 
-- [ ] **Step 2: Extend the dispatcher contract red.** Add `node` and `npm` to the injected tool fixture, require the doctor to resolve both native executables, require Node `v24.18.1` and npm `11.15.0`, and add `ui-test` to the accepted task set. Assert `ui-test` invokes only checked `npm.cmd` with this exact vector:
+- [ ] **Step 2: Extend the dispatcher contract red.** Add `node` and `npm` to the injected tool fixture, require the doctor to resolve both native executables, require Node `v24.18.1` and the archive's bundled npm `11.16.0`, and add `ui-test` to the accepted task set. Assert `ui-test` invokes only checked `npm.cmd` with this exact vector:
 
 ```powershell
 @('run', 'check')
@@ -83,7 +85,7 @@ Run `tests/tooling/dev_entrypoint_contract.ps1`. Expected: FAIL because `scripts
 ```json
 {
   "node": "24.18.1",
-  "npm": "11.15.0",
+  "npm": "11.16.0",
   "react": "19.2.8",
   "react-dom": "19.2.8",
   "vite": "8.2.1",
@@ -102,7 +104,7 @@ Run `tests/tooling/dev_entrypoint_contract.ps1`. Expected: FAIL because `scripts
 }
 ```
 
-Use exact versions rather than caret/tilde ranges, set `packageManager` to `npm@11.15.0`, generate `package-lock.json` with the native npm, and expose these scripts: `generate:bridge`, `test`, `build`, `test:visual`, and `check` (`generate:bridge`, clean generated-type diff, Vitest, production build, and Playwright in that order). Set `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`; Playwright uses installed Microsoft Edge through `channel: 'msedge'`.
+Use exact versions rather than caret/tilde ranges, set `packageManager` to `npm@11.16.0`, generate `package-lock.json` with the native npm, and expose these scripts: `generate:bridge`, `test`, `build`, `test:visual`, and `check` (`generate:bridge`, clean generated-type diff, Vitest, production build, and Playwright in that order). Set `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`; Playwright uses installed Microsoft Edge through `channel: 'msedge'`.
 
 - [ ] **Step 5: Define the closed bridge schema and cross-language cases.** Set `additionalProperties: false` at the envelope and payload levels. Accept only bridge version `1`, request IDs matching `^[A-Za-z0-9._-]{1,64}$`, parameter IDs `0..3`, normalized values `0..1`, and the message families from the design. Structure the fixture as `parse_cases` (one JSON string plus expected parse result/error per case) and `session_cases` (an ordered command array plus expected host calls/error). Include every valid family plus cases for overlong input, malformed JSON, unsupported version, unknown type, unknown key, missing key, wrong scalar type, parameter `-1`, parameter `4`, value below `0`, value above `1`, string `"NaN"`, and out-of-order gesture sequences.
 

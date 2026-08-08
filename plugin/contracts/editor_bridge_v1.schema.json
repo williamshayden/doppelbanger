@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Doppelbanger editor bridge v1 envelope",
+  "oneOf": [
+    { "$ref": "#/$defs/uiReady" },
+    { "$ref": "#/$defs/parameterBegin" },
+    { "$ref": "#/$defs/parameterSet" },
+    { "$ref": "#/$defs/parameterEnd" },
+    { "$ref": "#/$defs/bypassBegin" },
+    { "$ref": "#/$defs/bypassSet" },
+    { "$ref": "#/$defs/bypassEnd" },
+    { "$ref": "#/$defs/stateSnapshot" },
+    { "$ref": "#/$defs/parameterChanged" },
+    { "$ref": "#/$defs/bypassChanged" },
+    { "$ref": "#/$defs/compatibilityError" }
+  ],
+  "$defs": {
+    "requestId": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$" },
+    "parameterId": { "type": "integer", "minimum": 0, "maximum": 3 },
+    "normalizedValue": { "type": "number", "minimum": 0, "maximum": 1 },
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "normalized", "display"],
+      "properties": {
+        "id": { "$ref": "#/$defs/parameterId" },
+        "normalized": { "$ref": "#/$defs/normalizedValue" },
+        "display": { "type": "number", "minimum": -120, "maximum": 120 }
+      }
+    },
+    "uiReady": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "ui.ready" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": { "type": "object", "additionalProperties": false }
+      }
+    },
+    "parameterBegin": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "parameter.begin_edit" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "$ref": "#/$defs/parameterId" } } }
+      }
+    },
+    "parameterSet": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "parameter.set" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": { "type": "object", "additionalProperties": false, "required": ["id", "value"], "properties": { "id": { "$ref": "#/$defs/parameterId" }, "value": { "$ref": "#/$defs/normalizedValue" } } }
+      }
+    },
+    "parameterEnd": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "parameter.end_edit" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "$ref": "#/$defs/parameterId" } } }
+      }
+    },
+    "bypassBegin": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "bypass.begin_edit" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": { "type": "object", "additionalProperties": false }
+      }
+    },
+    "bypassSet": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "bypass.set" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": { "type": "object", "additionalProperties": false, "required": ["value"], "properties": { "value": { "type": "boolean" } } }
+      }
+    },
+    "bypassEnd": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "bypass.end_edit" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": { "type": "object", "additionalProperties": false }
+      }
+    },
+    "stateSnapshot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "state.snapshot" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["parameters", "bypass", "build", "dsp_ready", "runtime_mode"],
+          "properties": {
+            "parameters": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "$ref": "#/$defs/parameter" } },
+            "bypass": { "type": "boolean" }, "build": { "type": "string", "minLength": 1, "maxLength": 32 },
+            "dsp_ready": { "type": "boolean" }, "runtime_mode": { "const": "LOCAL" }
+          }
+        }
+      }
+    },
+    "parameterChanged": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "parameter.changed" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": { "$ref": "#/$defs/parameter" }
+      }
+    },
+    "bypassChanged": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "bypass.changed" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": { "type": "object", "additionalProperties": false, "required": ["value"], "properties": { "value": { "type": "boolean" } } }
+      }
+    },
+    "compatibilityError": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "type", "payload"],
+      "properties": {
+        "version": { "const": 1 }, "type": { "const": "compatibility.error" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "payload": { "type": "object", "additionalProperties": false, "required": ["code"], "properties": { "code": { "type": "string", "pattern": "^DBUI_[A-Z_]+$" } } }
+      }
+    }
+  }
+}

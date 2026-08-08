@@ -2,11 +2,19 @@
 
 #include "IPlug_include_in_plug_src.h"
 
+#ifdef WEBVIEW_EDITOR_DELEGATE
+#include "IPlugPaths.h"
+#endif
+
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <limits>
+#include <nlohmann/json.hpp>
+#include <string>
 #include <thread>
 
 namespace {
@@ -42,7 +50,256 @@ bool PlansEqual(const db_runtime_plan_v1& left,
          left.eq_gains_db[2] == right.eq_gains_db[2];
 }
 
+constexpr char kBridgeRuntimeMode[] = "LOCAL";
+constexpr char kBridgeBuild[] = PLUG_VERSION_STR;
+constexpr char kBridgeSnapshot[] = "state.snapshot";
+constexpr char kBridgeParameterChanged[] = "parameter.changed";
+constexpr char kBridgeBypassChanged[] = "bypass.changed";
+constexpr char kBridgeCompatibilityError[] = "compatibility.error";
+constexpr char kLocalOriginPrefix[] = "https://iplug.example/";
+constexpr char kBlankPage[] = "about:blank";
+constexpr char kInstalledEditorPath[] = "web/index.html";
+
+bool IsFiniteNormalized(double value) noexcept {
+  return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+}
+
+bool IsValidSnapshotParameter(const doppelbanger::editor::SnapshotParameter& parameter,
+                              int expectedId) noexcept {
+  const double minimum = expectedId == kOutputParam ? -12.0 : -3.0;
+  const double maximum = expectedId == kOutputParam ? 12.0 : 3.0;
+  return parameter.id == expectedId && IsFiniteNormalized(parameter.normalized) &&
+         std::isfinite(parameter.display) && parameter.display >= minimum &&
+         parameter.display <= maximum &&
+         std::round(parameter.display * 100.0) == parameter.display * 100.0;
+}
+
+bool IsControlledAscii(std::string_view text) noexcept {
+  if (text.empty() || text.size() > doppelbanger::editor::kMaxOutboundEnvelopeBytes) {
+    return false;
+  }
+  for (const unsigned char character : text) {
+    if (character < 0x20U || character > 0x7eU) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool IsCompatibilityCode(std::string_view code) noexcept {
+  if (code.size() < 6 || code.size() > 64 || code.rfind("DBUI_", 0) != 0) {
+    return false;
+  }
+  for (const unsigned char character : code) {
+    if (!((character >= 'A' && character <= 'Z') || character == '_')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string SerializeOutbound(const nlohmann::json& message) {
+  const std::string serialized = message.dump();
+  return IsControlledAscii(serialized) ? serialized : std::string{};
+}
+
+bool SnapshotsEqual(const doppelbanger::editor::SnapshotParameter& left,
+                    const doppelbanger::editor::SnapshotParameter& right) noexcept {
+  return left.id == right.id && left.normalized == right.normalized &&
+         left.display == right.display;
+}
+
+bool EndsWithContentsResources(std::string_view path) {
+  std::string normalized(path);
+  std::replace(normalized.begin(), normalized.end(), '/', '\\');
+  while (!normalized.empty() && normalized.back() == '\\') {
+    normalized.pop_back();
+  }
+  constexpr std::string_view suffix = "\\Contents\\Resources";
+  if (normalized.size() < suffix.size()) {
+    return false;
+  }
+  const std::size_t start = normalized.size() - suffix.size();
+  for (std::size_t index = 0; index < suffix.size(); ++index) {
+    if (std::tolower(static_cast<unsigned char>(normalized[start + index])) !=
+        std::tolower(static_cast<unsigned char>(suffix[index]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
+
+namespace doppelbanger::editor {
+
+std::string BuildStateSnapshotEnvelope(const EditorSnapshot& snapshot) {
+  for (int id = 0; id < kNumParams; ++id) {
+    if (!IsValidSnapshotParameter(snapshot.parameters[static_cast<std::size_t>(id)], id)) {
+      return {};
+    }
+  }
+  nlohmann::json parameters = nlohmann::json::array();
+  for (const SnapshotParameter& parameter : snapshot.parameters) {
+    parameters.push_back({{"id", parameter.id},
+                          {"normalized", parameter.normalized},
+                          {"display", parameter.display}});
+  }
+  return SerializeOutbound({{"version", 1},
+                            {"type", kBridgeSnapshot},
+                            {"payload", {{"parameters", parameters},
+                                         {"bypass", snapshot.bypassed},
+                                         {"build", kBridgeBuild},
+                                         {"dsp_ready", snapshot.dspReady},
+                                         {"runtime_mode", kBridgeRuntimeMode}}}});
+}
+
+std::string BuildParameterChangedEnvelope(const SnapshotParameter& parameter) {
+  if (parameter.id < 0 || parameter.id >= kNumParams ||
+      !IsValidSnapshotParameter(parameter, parameter.id)) {
+    return {};
+  }
+  return SerializeOutbound({{"version", 1},
+                            {"type", kBridgeParameterChanged},
+                            {"payload", {{"id", parameter.id},
+                                         {"normalized", parameter.normalized},
+                                         {"display", parameter.display}}}});
+}
+
+std::string BuildBypassChangedEnvelope(bool bypassed) {
+  return SerializeOutbound(
+      {{"version", 1}, {"type", kBridgeBypassChanged}, {"payload", {{"value", bypassed}}}});
+}
+
+std::string BuildCompatibilityErrorEnvelope(std::string_view code) {
+  if (!IsCompatibilityCode(code)) {
+    return {};
+  }
+  return SerializeOutbound({{"version", 1},
+                            {"type", kBridgeCompatibilityError},
+                            {"payload", {{"code", code}}}});
+}
+
+std::string BuildJavaScriptDelivery(std::string_view envelope) {
+  if (!IsControlledAscii(envelope)) {
+    return {};
+  }
+  return "window.__doppelbangerReceive(" + nlohmann::json(envelope).dump() + ");";
+}
+
+std::optional<std::string> ResolveInstalledEditorResource(
+    std::string_view contentsResources, std::string_view requestedPath) {
+  if (!EndsWithContentsResources(contentsResources) ||
+      requestedPath != kInstalledEditorPath) {
+    return std::nullopt;
+  }
+  std::string root(contentsResources);
+  while (!root.empty() && (root.back() == '\\' || root.back() == '/')) {
+    root.pop_back();
+  }
+  return root + "\\web\\index.html";
+}
+
+Publication EditorSnapshotPublisher::Publish(const EditorSnapshot& snapshot,
+                                             bool forceSnapshot) {
+  const std::string fullSnapshot = BuildStateSnapshotEnvelope(snapshot);
+  if (fullSnapshot.empty()) {
+    return {};
+  }
+  if (forceSnapshot) {
+    hasLast_ = true;
+    last_ = snapshot;
+    return {PublicationKind::kSnapshot, fullSnapshot};
+  }
+  if (!hasLast_) {
+    return {};
+  }
+  if (snapshot.generation != last_.generation || snapshot.dspReady != last_.dspReady) {
+    last_ = snapshot;
+    return {PublicationKind::kSnapshot, fullSnapshot};
+  }
+  for (std::size_t index = 0; index < snapshot.parameters.size(); ++index) {
+    if (!SnapshotsEqual(snapshot.parameters[index], last_.parameters[index])) {
+      const std::string changed = BuildParameterChangedEnvelope(snapshot.parameters[index]);
+      if (changed.empty()) {
+        return {};
+      }
+      last_.parameters[index] = snapshot.parameters[index];
+      return {PublicationKind::kParameterChanged, changed};
+    }
+  }
+  if (snapshot.bypassed != last_.bypassed) {
+    last_.bypassed = snapshot.bypassed;
+    return {PublicationKind::kBypassChanged, BuildBypassChangedEnvelope(snapshot.bypassed)};
+  }
+  return {};
+}
+
+void EditorSnapshotPublisher::Reset() noexcept {
+  hasLast_ = false;
+  last_ = {};
+}
+
+}  // namespace doppelbanger::editor
+
+#ifdef WEBVIEW_EDITOR_DELEGATE
+
+class Doppelbanger::EditorHostAdapter final : public doppelbanger::editor::EditorHost {
+ public:
+  explicit EditorHostAdapter(Doppelbanger& plugin) noexcept : plugin_(plugin) {}
+
+  bool BeginParameter(int parameterId) noexcept override {
+    if (!plugin_.mEditorAvailable || parameterId < kLowEqParam ||
+        parameterId > kOutputParam) {
+      return false;
+    }
+    plugin_.BeginInformHostOfParamChangeFromUI(parameterId);
+    return true;
+  }
+
+  bool SetParameter(int parameterId, double normalizedValue) noexcept override {
+    if (!plugin_.mEditorAvailable || parameterId < kLowEqParam ||
+        parameterId > kOutputParam || !IsFiniteNormalized(normalizedValue)) {
+      return false;
+    }
+    plugin_.SendParameterValueFromUI(parameterId, normalizedValue);
+    return true;
+  }
+
+  bool EndParameter(int parameterId) noexcept override {
+    if (parameterId < kLowEqParam || parameterId > kOutputParam) {
+      return false;
+    }
+    plugin_.EndInformHostOfParamChangeFromUI(parameterId);
+    return true;
+  }
+
+  bool BeginBypass() noexcept override {
+    return plugin_.mEditorAvailable &&
+           plugin_.beginEdit(iplug::kBypassParam) == Steinberg::kResultOk;
+  }
+
+  bool SetBypass(bool bypassed) noexcept override {
+    if (!plugin_.mEditorAvailable ||
+        plugin_.setParamNormalized(iplug::kBypassParam, bypassed ? 1.0 : 0.0) !=
+            Steinberg::kResultOk) {
+      return false;
+    }
+    return plugin_.performEdit(iplug::kBypassParam, bypassed ? 1.0 : 0.0) ==
+           Steinberg::kResultOk;
+  }
+
+  bool EndBypass() noexcept override {
+    return plugin_.endEdit(iplug::kBypassParam) == Steinberg::kResultOk;
+  }
+
+  bool SendSnapshot() noexcept override { return plugin_.PublishEditorSnapshot(true); }
+
+ private:
+  Doppelbanger& plugin_;
+};
+
+#endif
 
 bool Doppelbanger::StateMailbox::TryPublish(const StatePacket& packet,
                                             std::uint32_t attempts) noexcept {
@@ -90,9 +347,30 @@ Doppelbanger::Doppelbanger(const iplug::InstanceInfo& info)
   GetParam(kOutputParam)->InitDouble("Output", 0.0, -12.0, 12.0, 0.01, "dB",
                                      kStepped);
   mUiStateCache.plan = mPlan;
+#ifdef WEBVIEW_EDITOR_DELEGATE
+  SetEnableDevTools(false);
+  mEditorHost = std::make_unique<EditorHostAdapter>(*this);
+  mEditorSession = std::make_unique<doppelbanger::editor::EditorSession>(*mEditorHost);
+  mEditorInitFunc = [this]() {
+    WDL_String resources;
+    iplug::BundleResourcePath(resources, gHINSTANCE);
+    const auto resource = doppelbanger::editor::ResolveInstalledEditorResource(
+        resources.Get(), kInstalledEditorPath);
+    if (!resource.has_value() ||
+        !std::filesystem::is_regular_file(std::filesystem::path(*resource))) {
+      mEditorAvailable = false;
+      return;
+    }
+    LoadFile(resource->c_str(), nullptr);
+  };
+#endif
 }
 
 Doppelbanger::~Doppelbanger() { DestroyProcessor(); }
+
+bool Doppelbanger::IsProcessorReadyForEditor() const noexcept {
+  return mProcessorReady.load(std::memory_order_acquire);
+}
 
 bool Doppelbanger::SerializeState(iplug::IByteChunk& chunk) const {
   try {
@@ -213,6 +491,7 @@ void Doppelbanger::OnReset() {
       return;
     }
     if (db_processor_reset(mProcessor) != DB_STATUS_OK) {
+      mProcessorReady.store(false, std::memory_order_release);
       DestroyProcessor();
     }
   } catch (...) {
@@ -258,9 +537,11 @@ void Doppelbanger::ProcessBlock(iplug::sample** inputs,
     }
     if (db_processor_process_f32(mProcessor, outputs[0], outputs[1],
                                  static_cast<std::uint32_t>(nFrames)) != DB_STATUS_OK) {
+      mProcessorReady.store(false, std::memory_order_release);
       Silence(outputs, nFrames);
     }
   } catch (...) {
+    mProcessorReady.store(false, std::memory_order_release);
     Silence(outputs, nFrames);
   }
 }
@@ -535,6 +816,7 @@ bool Doppelbanger::ApplyPendingState() noexcept {
       db_processor_apply_prepared_v1(mProcessor, &pending.prepared) !=
           DB_STATUS_OK ||
       db_processor_reset(mProcessor) != DB_STATUS_OK) {
+    mProcessorReady.store(false, std::memory_order_release);
     return false;
   }
 
@@ -593,11 +875,13 @@ bool Doppelbanger::ReplaceProcessor(const db_runtime_plan_v1& plan) noexcept {
   if (previous != nullptr) {
     db_processor_destroy(previous);
   }
+  mProcessorReady.store(true, std::memory_order_release);
   return true;
 }
 
 bool Doppelbanger::ApplyParameterPlan() noexcept {
   if (mProcessor == nullptr) {
+    mProcessorReady.store(false, std::memory_order_release);
     return false;
   }
   if (!mParametersDirty) {
@@ -610,6 +894,7 @@ bool Doppelbanger::ApplyParameterPlan() noexcept {
   }
   if (!doppelbanger::state::IsValidPlanV1(plan) ||
       db_processor_apply_stepped_plan_v1(mProcessor, &plan) != DB_STATUS_OK) {
+    mProcessorReady.store(false, std::memory_order_release);
     return false;
   }
   mPlan = plan;
@@ -623,6 +908,7 @@ bool Doppelbanger::ApplyParameterPlan() noexcept {
 void Doppelbanger::DestroyProcessor() noexcept {
   db_processor* processor = mProcessor;
   mProcessor = nullptr;
+  mProcessorReady.store(false, std::memory_order_release);
   mPreparedTargets = {};
   mPreparedSampleRate = 0U;
   mPreparedValid = 0U;
@@ -674,3 +960,96 @@ void Doppelbanger::SilenceProcessData(Steinberg::Vst::ProcessData& data) noexcep
   }
   output.silenceFlags |= silenceFlags;
 }
+
+#ifdef WEBVIEW_EDITOR_DELEGATE
+
+bool Doppelbanger::SendEditorEnvelope(std::string_view envelope) {
+  const std::string script = doppelbanger::editor::BuildJavaScriptDelivery(envelope);
+  if (!mEditorAvailable || script.empty()) {
+    return false;
+  }
+  EvaluateJavaScript(script.c_str());
+  return true;
+}
+
+bool Doppelbanger::PublishEditorSnapshot(bool forceSnapshot) {
+  if (!mEditorAvailable) {
+    return false;
+  }
+  doppelbanger::editor::EditorSnapshot snapshot{};
+  for (int parameterId = kLowEqParam; parameterId <= kOutputParam; ++parameterId) {
+    const iplug::IParam* parameter = GetParam(parameterId);
+    if (parameter == nullptr) {
+      return false;
+    }
+    snapshot.parameters[static_cast<std::size_t>(parameterId)] = {
+        parameterId, parameter->GetNormalized(), parameter->Value()};
+  }
+  snapshot.bypassed = getParamNormalized(iplug::kBypassParam) >= 0.5;
+  snapshot.dspReady = IsProcessorReadyForEditor();
+  snapshot.generation = CurrentStateForUi().generation;
+  const doppelbanger::editor::Publication publication =
+      mEditorSnapshots.Publish(snapshot, forceSnapshot);
+  return publication.kind == doppelbanger::editor::PublicationKind::kNone ||
+         SendEditorEnvelope(publication.envelope);
+}
+
+void Doppelbanger::SendCompatibilityError(std::string_view code) {
+  const std::string envelope = doppelbanger::editor::BuildCompatibilityErrorEnvelope(code);
+  if (!envelope.empty()) {
+    static_cast<void>(SendEditorEnvelope(envelope));
+  }
+}
+
+void Doppelbanger::OnMessageFromWebView(const char* json) {
+  if (json == nullptr || !mEditorSession) {
+    SendCompatibilityError(doppelbanger::editor::kBridgeMalformed);
+    return;
+  }
+  const doppelbanger::editor::ParseResult parsed =
+      doppelbanger::editor::ParseEditorCommand(json);
+  const char* error = mEditorSession->Dispatch(parsed);
+  if (error != nullptr) {
+    SendCompatibilityError(error);
+  }
+}
+
+void Doppelbanger::OnWebContentLoaded() {
+  mEditorAvailable = true;
+  mEditorLifecycleOpen = true;
+  mEditorSnapshots.Reset();
+}
+
+bool Doppelbanger::OnCanNavigateToURL(const char* url) {
+  if (url == nullptr) {
+    return false;
+  }
+  const std::string_view candidate(url);
+  return candidate == kBlankPage || candidate.rfind(kLocalOriginPrefix, 0) == 0;
+}
+
+bool Doppelbanger::OnCanDownloadMIMEType(const char* mimeType) {
+  static_cast<void>(mimeType);
+  return false;
+}
+
+void Doppelbanger::OnIdle() {
+  iplug::Plugin::OnIdle();
+  if (mEditorAvailable) {
+    static_cast<void>(PublishEditorSnapshot(false));
+  }
+}
+
+void Doppelbanger::CloseWindow() {
+  if (mEditorSession) {
+    static_cast<void>(mEditorSession->Close());
+  }
+  mEditorAvailable = false;
+  CloseWebView();
+  if (mEditorLifecycleOpen) {
+    mEditorLifecycleOpen = false;
+    OnUIClose();
+  }
+}
+
+#endif

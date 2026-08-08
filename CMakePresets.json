@@ -32,6 +32,8 @@
       "configurePreset": "windows-msvc-x64-release",
       "targets": [
         "StateCodecTests",
+        "EditorBridgeTests",
+        "EditorSnapshotTests",
         "PluginLifecycleTests",
         "Doppelbanger-vst3"
       ]

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('doctor', 'format', 'test', 'configure', 'build', 'validate')]
+    [ValidateSet('doctor', 'format', 'test', 'configure', 'build', 'validate', 'ui-install', 'ui-test')]
     [string]$Task,
     [ValidateSet('Release')]
     [string]$Configuration = 'Release',
@@ -93,11 +93,12 @@ function Resolve-DbDevTool {
 function Invoke-DbDevTool {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [string]$WorkingDirectory
     )
 
     if ($CommandRunner) {
-        $result = & $CommandRunner $Path $Arguments
+        $result = & $CommandRunner $Path $Arguments $WorkingDirectory
         $output = if ($null -ne $result -and $result.PSObject.Properties['Output']) { [string]$result.Output } else { [string]$result }
         $launchError = if ($null -ne $result -and $result.PSObject.Properties['LaunchError']) { [string]$result.LaunchError } else { '' }
         if ($null -eq $result -or -not $result.PSObject.Properties['ExitCode'] -or $null -eq $result.ExitCode -or -not [string]::IsNullOrEmpty($launchError)) {
@@ -115,6 +116,9 @@ function Invoke-DbDevTool {
     try {
         $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
         $startInfo.FileName = $Path
+        if (-not [string]::IsNullOrEmpty($WorkingDirectory)) {
+            $startInfo.WorkingDirectory = $WorkingDirectory
+        }
         $startInfo.Arguments = (@($Arguments | ForEach-Object {
             $escaped = $_ -replace '(\\*)"', '$1$1\"'
             $escaped = $escaped -replace '(\\+)$', '$1$1'
@@ -151,7 +155,29 @@ function Invoke-DbDevTool {
     return $joinedOutput
 }
 
+function Get-DbDevEditorDependencies {
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+
+    $lockPath = Join-Path $RepositoryRoot 'tools\editor-dependencies.lock.json'
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+        throw 'DBDEV_EDITOR_LOCK_MISSING: editor dependency lock is missing'
+    }
+    try {
+        $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw 'DBDEV_EDITOR_LOCK_INVALID: editor dependency lock is invalid'
+    }
+    foreach ($name in @('node', 'npm')) {
+        if (-not $lock.PSObject.Properties[$name] -or [string]::IsNullOrWhiteSpace([string]$lock.$name)) {
+            throw "DBDEV_EDITOR_LOCK_INVALID: editor dependency lock is missing '$name'"
+        }
+    }
+    return $lock
+}
+
 function Assert-DbDevNativeEnvironment {
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
     if (-not $IsWindows) {
         throw 'DBDEV_WINDOWS_REQUIRED: run this dispatcher from native Windows PowerShell'
     }
@@ -179,7 +205,7 @@ function Assert-DbDevNativeEnvironment {
     }
 
     $tools = @{}
-    foreach ($name in @('rustc', 'cmake', 'ninja', 'cl', 'git')) {
+    foreach ($name in @('rustc', 'cmake', 'ninja', 'cl', 'git', 'node', 'npm')) {
         $tools[$name] = Resolve-DbDevTool $name
     }
 
@@ -187,11 +213,20 @@ function Assert-DbDevNativeEnvironment {
     if ($rustVersion -notmatch '(?m)^host:\s*x86_64-pc-windows-msvc\s*$') {
         throw 'DBDEV_WRONG_RUST_HOST: rustc must report x86_64-pc-windows-msvc'
     }
+    $editorDependencies = Get-DbDevEditorDependencies -RepositoryRoot $RepositoryRoot
+    $nodeVersion = (Invoke-DbDevTool -Path $tools.node -Arguments @('--version')).Trim()
+    if ($nodeVersion -cne "v$($editorDependencies.node)") {
+        throw "DBDEV_WRONG_NODE_VERSION: node must report v$($editorDependencies.node)"
+    }
+    $npmVersion = (Invoke-DbDevTool -Path $tools.npm -Arguments @('--version')).Trim()
+    if ($npmVersion -cne [string]$editorDependencies.npm) {
+        throw "DBDEV_WRONG_NPM_VERSION: npm must report $($editorDependencies.npm)"
+    }
     return $tools
 }
 
-$tools = Assert-DbDevNativeEnvironment
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$tools = Assert-DbDevNativeEnvironment -RepositoryRoot $repoRoot
 $releasePreset = 'windows-msvc-x64-release'
 $validatorBuildTree = 'build/windows-vst3-validator'
 
@@ -226,6 +261,16 @@ try {
             break
         }
         'build' {
+            $uiRoot = Join-Path $repoRoot 'plugin\ui'
+            $previousPlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+            try {
+                [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1', 'Process')
+                Invoke-DbDevTool -Path $tools.npm -Arguments @('ci', '--no-audit', '--no-fund') -WorkingDirectory $uiRoot
+                Invoke-DbDevTool -Path $tools.npm -Arguments @('run', 'build') -WorkingDirectory $uiRoot
+            }
+            finally {
+                [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $previousPlaywrightSkipBrowserDownload, 'Process')
+            }
             $ctest = Resolve-DbDevTool 'ctest'
             Invoke-DbDevTool -Path $tools.cmake -Arguments @('--build', '--preset', $releasePreset)
             Invoke-DbDevTool -Path $tools.cmake -Arguments @('--build', $validatorBuildTree, '--target', 'validator')
@@ -237,7 +282,13 @@ try {
             $wrapperPath = Join-Path $repoRoot 'tests\plugin\validate_vst3.ps1'
             $validatorPath = Join-Path $repoRoot 'build\windows-vst3-validator\bin\validator.exe'
             $pluginPath = Join-Path $repoRoot 'build\windows-msvc-x64-release\artefacts\Release\VST3\Doppelbanger.vst3'
+            $webAssetContractPath = Join-Path $repoRoot 'tests\tooling\web_asset_contract.ps1'
+            $webRoot = Join-Path $pluginPath 'Contents\Resources\web'
             $evidencePath = Join-Path $repoRoot 'var\validation\native-foundation'
+            Invoke-DbDevTool -Path $powershell -Arguments @(
+                '-NoProfile', '-File', $webAssetContractPath,
+                '-WebRoot', $webRoot
+            )
             Invoke-DbDevTool -Path $powershell -Arguments @(
                 '-NoProfile', '-File', $wrapperPath,
                 '-ValidatorPath', $validatorPath,
@@ -245,6 +296,23 @@ try {
                 '-EvidenceDirectory', $evidencePath,
                 '-TimeoutSeconds', '120'
             )
+            break
+        }
+        'ui-test' {
+            $uiRoot = Join-Path $repoRoot 'plugin\ui'
+            Invoke-DbDevTool -Path $tools.npm -Arguments @('run', 'check') -WorkingDirectory $uiRoot
+            break
+        }
+        'ui-install' {
+            $uiRoot = Join-Path $repoRoot 'plugin\ui'
+            $previousPlaywrightSkipBrowserDownload = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'Process')
+            try {
+                [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1', 'Process')
+                Invoke-DbDevTool -Path $tools.npm -Arguments @('ci') -WorkingDirectory $uiRoot
+            }
+            finally {
+                [Environment]::SetEnvironmentVariable('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', $previousPlaywrightSkipBrowserDownload, 'Process')
+            }
             break
         }
     }
