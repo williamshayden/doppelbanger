@@ -4,6 +4,8 @@
 
 **Goal:** Ship a Windows x64 Doppelbanger VST3 whose packaged React editor opens in Ableton, controls the existing processor through host automation, preserves saved-state and class-ID compatibility, and is installable from `Doppelbanger-Setup.exe`.
 
+> **Paused checkpoint — 2026-08-07:** Tasks 1–3 are review-clean and hosted-green. Task 4 is implemented at commit `f266f4b` but still requires its independent task review, hosted CI, and a live editor-open smoke; do not claim the UI issue fixed before that smoke passes. Resume by reviewing Task 4 from base `c131644`, then proceed to the Windows installer (Task 5) and Ableton/demo release evidence (Task 6). No development processes need to remain running while paused.
+
 **Architecture:** Keep the validated Rust processor and iPlug2 VST3 component intact. Add a pure React/Vite surface and a separately testable bounded C++ bridge, then connect them through iPlug2's `WebViewEditorDelegate` using local WebView2 resources only. Build a conventional Inno Setup installer from the already validated bundle; WebView2 is the only end-user editor prerequisite and is installed through Microsoft's signed Evergreen bootstrapper only when missing and approved by the user.
 
 **Tech Stack:** Rust 1.97.1 MSVC, C++17/MSVC 14.44, CMake 4.4.2, Ninja 1.13.2, iPlug2 at `5c2df9dce3f5258acfeff3846a6a9563f382212c`, WebView2 SDK `1.0.2903.40`, WIL at `f0c6a81c0c9a4b23b6801f40554b8bec425a83b4`, Node.js `24.18.1` x64, npm `11.16.0`, React `19.2.8`, Vite `8.2.1`, TypeScript `7.0.2`, Vitest `4.1.10`, Playwright `1.62.1`, Inno Setup `6.7.1`.
