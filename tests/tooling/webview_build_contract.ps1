@@ -75,6 +75,14 @@ $evidenceStepMatch = [regex]::Match(
     '(?ms)^[ ]{6}- name:\s*Prepare sanitized CI evidence\s*\r?\n.*?(?=^[ ]{6}- name:|\z)')
 Assert-True $evidenceStepMatch.Success 'the workflow retains the dedicated sanitized-evidence step'
 $evidenceStep = $evidenceStepMatch.Value
+$evidenceScriptMatch = [regex]::Match(
+    $evidenceStep,
+    '(?ms)^[ ]{8}run:\s*\|\s*\r?\n(?<script>.*)\z')
+Assert-True $evidenceScriptMatch.Success 'the sanitized-evidence step contains an extractable PowerShell run block'
+$evidenceScript = [regex]::Replace(
+    $evidenceScriptMatch.Groups['script'].Value,
+    '(?m)^[ ]{10}',
+    '')
 Assert-True ($evidenceStep -notmatch '\$bundleFiles\.Count\s+-ne\s+1|bundle must contain only the exact x86_64-win module') 'the CI evidence gate does not retain the stale one-file-only bundle assumption'
 Assert-Matches $evidenceStep '\$module\s*=\s*Join-Path\s+\$bundle\s+''Contents\\x86_64-win\\Doppelbanger\.vst3''' 'the CI evidence gate identifies the exact x64 VST3 module'
 Assert-Matches $evidenceStep '\$webRoot\s*=\s*Join-Path\s+\$bundle\s+''Contents\\Resources\\web''' 'the CI evidence gate identifies the exact packaged web root'
@@ -86,17 +94,262 @@ Assert-Matches $evidenceStep '\$moduleFullPath\s*=\s*\[System\.IO\.Path\]::GetFu
 Assert-Matches $evidenceStep '\$webRootFullPath\s*=\s*\[System\.IO\.Path\]::GetFullPath\(\$webRoot\)\.TrimEnd\(' 'the CI evidence allowlist normalizes and trims the exact web root'
 Assert-Matches $evidenceStep '\$webRootPrefix\s*=\s*\$webRootFullPath\s*\+\s*\[System\.IO\.Path\]::DirectorySeparatorChar' 'the CI evidence allowlist adds a trailing separator to prevent sibling-prefix bypasses'
 Assert-Matches $evidenceStep '\$bundleFiles\s*=\s*@\(Get-ChildItem\s+-LiteralPath\s+\$bundle\s+-Recurse\s+-File\s+-Force\)' 'the CI evidence allowlist enumerates every bundle file including hidden files'
-$orderedAllowlistPattern = '(?ms)foreach\s*\(\$bundleFile\s+in\s+\$bundleFiles\)\s*\{\s*' +
-    '\$fileFullPath\s*=\s*\[System\.IO\.Path\]::GetFullPath\(\$bundleFile\.FullName\)\s*' +
-    'if\s*\(\[string\]::Equals\(\$fileFullPath,\s*\$moduleFullPath,\s*\[StringComparison\]::OrdinalIgnoreCase\)\)\s*\{\s*' +
-    'continue\s*\}\s*' +
-    'if\s*\(\$fileFullPath\.StartsWith\(\$webRootPrefix,\s*\[StringComparison\]::OrdinalIgnoreCase\)\)\s*\{\s*' +
-    '\$webFileCount\+\+\s*continue\s*\}\s*' +
-    'throw\s+"unexpected VST3 bundle file:\s*\$fileFullPath"\s*\}'
-Assert-Matches $evidenceStep $orderedAllowlistPattern 'the CI evidence allowlist binds normalized candidate, exact module admission, web descendant admission, and unconditional rejection in order'
-$evidenceContinueCount = [regex]::Matches($evidenceStep, '(?m)^[ \t]*continue[ \t]*$').Count
-Assert-True ($evidenceContinueCount -eq 2) 'the CI evidence step has exactly the two ordered allowlist continue statements'
-Assert-True ($evidenceStep -notmatch '(?m)^[ \t]*(?:break|return)(?:[ \t]+.*)?$') 'the CI evidence allowlist has no alternate unconditional admission path'
+function Test-VariableExpressionAst {
+    param([object]$Ast, [string]$ExpectedName)
+    return $Ast -is [System.Management.Automation.Language.VariableExpressionAst] -and
+        [string]::Equals(
+            $Ast.VariablePath.UserPath,
+            $ExpectedName,
+            [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-SinglePipelineExpressionAst {
+    param([object]$Pipeline)
+    if ($Pipeline -isnot [System.Management.Automation.Language.PipelineAst]) { return $null }
+    $elements = @($Pipeline.PipelineElements)
+    if ($elements.Count -ne 1 -or
+        $elements[0] -isnot [System.Management.Automation.Language.CommandExpressionAst]) {
+        return $null
+    }
+    return $elements[0].Expression
+}
+
+function Test-OrdinalIgnoreCaseAst {
+    param([object]$Ast)
+    return $Ast -is [System.Management.Automation.Language.MemberExpressionAst] -and
+        $Ast.Static -and
+        $Ast.Expression -is [System.Management.Automation.Language.TypeExpressionAst] -and
+        [string]::Equals(
+            $Ast.Expression.TypeName.FullName,
+            'StringComparison',
+            [StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals(
+            $Ast.Member.Value,
+            'OrdinalIgnoreCase',
+            [StringComparison]::Ordinal)
+}
+
+function Test-CiEvidenceAllowlistControlFlow {
+    param([Parameter(Mandatory = $true)][string]$ScriptText)
+
+    $tokens = $null
+    $parseErrors = $null
+    $scriptAst = [System.Management.Automation.Language.Parser]::ParseInput(
+        $ScriptText,
+        [ref]$tokens,
+        [ref]$parseErrors)
+    if (@($parseErrors).Count -ne 0) { return $false }
+
+    $allForEachLoops = @($scriptAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.ForEachStatementAst]
+    }, $true))
+    $bundleLoops = @($allForEachLoops | Where-Object {
+        $conditionExpression = Get-SinglePipelineExpressionAst -Pipeline $_.Condition
+        Test-VariableExpressionAst -Ast $conditionExpression -ExpectedName 'bundleFiles'
+    })
+    if ($bundleLoops.Count -ne 1) { return $false }
+    $bundleLoop = $bundleLoops[0]
+    if (-not (Test-VariableExpressionAst -Ast $bundleLoop.Variable -ExpectedName 'bundleFile')) {
+        return $false
+    }
+
+    $statements = @($bundleLoop.Body.Statements)
+    if ($statements.Count -ne 4) { return $false }
+
+    $candidateAssignment = $statements[0]
+    if ($candidateAssignment -isnot [System.Management.Automation.Language.AssignmentStatementAst] -or
+        $candidateAssignment.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals -or
+        $candidateAssignment.Left -isnot [System.Management.Automation.Language.VariableExpressionAst] -or
+        $candidateAssignment.Right -isnot [System.Management.Automation.Language.CommandExpressionAst]) {
+        return $false
+    }
+    $candidateName = $candidateAssignment.Left.VariablePath.UserPath
+    $normalizationCall = $candidateAssignment.Right.Expression
+    if ($normalizationCall -isnot [System.Management.Automation.Language.InvokeMemberExpressionAst] -or
+        -not $normalizationCall.Static -or
+        $normalizationCall.Expression -isnot [System.Management.Automation.Language.TypeExpressionAst] -or
+        -not [string]::Equals($normalizationCall.Expression.TypeName.FullName, 'System.IO.Path', [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($normalizationCall.Member.Value, 'GetFullPath', [StringComparison]::Ordinal) -or
+        @($normalizationCall.Arguments).Count -ne 1) {
+        return $false
+    }
+    $normalizationSource = $normalizationCall.Arguments[0]
+    if ($normalizationSource -isnot [System.Management.Automation.Language.MemberExpressionAst] -or
+        $normalizationSource.Static -or
+        -not (Test-VariableExpressionAst -Ast $normalizationSource.Expression -ExpectedName 'bundleFile') -or
+        -not [string]::Equals($normalizationSource.Member.Value, 'FullName', [StringComparison]::Ordinal)) {
+        return $false
+    }
+
+    $moduleIf = $statements[1]
+    if ($moduleIf -isnot [System.Management.Automation.Language.IfStatementAst] -or
+        @($moduleIf.Clauses).Count -ne 1 -or
+        $null -ne $moduleIf.ElseClause) {
+        return $false
+    }
+    $moduleCondition = Get-SinglePipelineExpressionAst -Pipeline $moduleIf.Clauses[0].Item1
+    $moduleArguments = if ($moduleCondition -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) {
+        @($moduleCondition.Arguments)
+    } else { @() }
+    if ($moduleCondition -isnot [System.Management.Automation.Language.InvokeMemberExpressionAst] -or
+        -not $moduleCondition.Static -or
+        $moduleCondition.Expression -isnot [System.Management.Automation.Language.TypeExpressionAst] -or
+        $moduleCondition.Expression.TypeName.FullName -notin @('string', 'System.String') -or
+        -not [string]::Equals($moduleCondition.Member.Value, 'Equals', [StringComparison]::Ordinal) -or
+        $moduleArguments.Count -ne 3 -or
+        -not (Test-VariableExpressionAst -Ast $moduleArguments[0] -ExpectedName $candidateName) -or
+        -not (Test-VariableExpressionAst -Ast $moduleArguments[1] -ExpectedName 'moduleFullPath') -or
+        -not (Test-OrdinalIgnoreCaseAst -Ast $moduleArguments[2])) {
+        return $false
+    }
+    $moduleAdmission = @($moduleIf.Clauses[0].Item2.Statements)
+    if ($moduleAdmission.Count -ne 1 -or
+        $moduleAdmission[0] -isnot [System.Management.Automation.Language.ContinueStatementAst]) {
+        return $false
+    }
+
+    $webIf = $statements[2]
+    if ($webIf -isnot [System.Management.Automation.Language.IfStatementAst] -or
+        @($webIf.Clauses).Count -ne 1 -or
+        $null -ne $webIf.ElseClause) {
+        return $false
+    }
+    $webCondition = Get-SinglePipelineExpressionAst -Pipeline $webIf.Clauses[0].Item1
+    $webArguments = if ($webCondition -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) {
+        @($webCondition.Arguments)
+    } else { @() }
+    if ($webCondition -isnot [System.Management.Automation.Language.InvokeMemberExpressionAst] -or
+        $webCondition.Static -or
+        -not (Test-VariableExpressionAst -Ast $webCondition.Expression -ExpectedName $candidateName) -or
+        -not [string]::Equals($webCondition.Member.Value, 'StartsWith', [StringComparison]::Ordinal) -or
+        $webArguments.Count -ne 2 -or
+        -not (Test-VariableExpressionAst -Ast $webArguments[0] -ExpectedName 'webRootPrefix') -or
+        -not (Test-OrdinalIgnoreCaseAst -Ast $webArguments[1])) {
+        return $false
+    }
+    $webAdmission = @($webIf.Clauses[0].Item2.Statements)
+    if ($webAdmission.Count -ne 2 -or
+        $webAdmission[1] -isnot [System.Management.Automation.Language.ContinueStatementAst]) {
+        return $false
+    }
+    $webIncrement = Get-SinglePipelineExpressionAst -Pipeline $webAdmission[0]
+    if ($webIncrement -isnot [System.Management.Automation.Language.UnaryExpressionAst] -or
+        $webIncrement.TokenKind -ne [System.Management.Automation.Language.TokenKind]::PostfixPlusPlus -or
+        -not (Test-VariableExpressionAst -Ast $webIncrement.Child -ExpectedName 'webFileCount')) {
+        return $false
+    }
+
+    $rejection = $statements[3]
+    if ($rejection -isnot [System.Management.Automation.Language.ThrowStatementAst]) { return $false }
+    $rejectionExpression = Get-SinglePipelineExpressionAst -Pipeline $rejection.Pipeline
+    $expectedRejectionValue = 'unexpected VST3 bundle file: $' + $candidateName
+    if ($rejectionExpression -isnot [System.Management.Automation.Language.ExpandableStringExpressionAst] -or
+        -not [string]::Equals($rejectionExpression.Value, $expectedRejectionValue, [StringComparison]::Ordinal) -or
+        @($rejectionExpression.NestedExpressions).Count -ne 1 -or
+        -not (Test-VariableExpressionAst -Ast $rejectionExpression.NestedExpressions[0] -ExpectedName $candidateName)) {
+        return $false
+    }
+
+    $continueStatements = @($bundleLoop.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.ContinueStatementAst]
+    }, $true))
+    $breakStatements = @($bundleLoop.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.BreakStatementAst]
+    }, $true))
+    $returnStatements = @($bundleLoop.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.ReturnStatementAst]
+    }, $true))
+    return $continueStatements.Count -eq 2 -and
+        $breakStatements.Count -eq 0 -and
+        $returnStatements.Count -eq 0
+}
+
+Assert-True (Test-CiEvidenceAllowlistControlFlow -ScriptText $evidenceScript) 'the parsed CI evidence allowlist has the exact executable control flow'
+$blockCommentDecoy = @'
+<#
+foreach ($bundleFile in $bundleFiles) {
+  $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)
+  if ([string]::Equals($fileFullPath, $moduleFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+    continue
+  }
+  if ($fileFullPath.StartsWith($webRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    $webFileCount++
+    continue
+  }
+  throw "unexpected VST3 bundle file: $fileFullPath"
+}
+#>
+foreach ($bundleFile in $bundleFiles) {
+  $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)
+  if ($unsafe) { return }
+  throw "unexpected VST3 bundle file: $fileFullPath"
+}
+'@
+$inlineBreakAlternate = @'
+foreach ($bundleFile in $bundleFiles) {
+  $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)
+  if ([string]::Equals($fileFullPath, $moduleFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+    if ($unsafe) { break }; continue
+  }
+  if ($fileFullPath.StartsWith($webRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    $webFileCount++
+    continue
+  }
+  throw "unexpected VST3 bundle file: $fileFullPath"
+}
+'@
+$inlineReturnAlternate = @'
+foreach ($bundleFile in $bundleFiles) {
+  $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)
+  if ([string]::Equals($fileFullPath, $moduleFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+    continue
+  }
+  if ($fileFullPath.StartsWith($webRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    $webFileCount++
+    if ($unsafe) { return }; continue
+  }
+  throw "unexpected VST3 bundle file: $fileFullPath"
+}
+'@
+$thirdAdmissionAlternate = @'
+foreach ($bundleFile in $bundleFiles) {
+  $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)
+  if ([string]::Equals($fileFullPath, $moduleFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+    continue
+  }
+  if ($fileFullPath.StartsWith($webRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    $webFileCount++
+    continue
+  }
+  if ($unsafe) { continue }
+  throw "unexpected VST3 bundle file: $fileFullPath"
+}
+'@
+$stringDecoy = @'
+$safeLoop = @"
+foreach ($bundleFile in $bundleFiles) {
+  $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)
+  if ([string]::Equals($fileFullPath, $moduleFullPath, [StringComparison]::OrdinalIgnoreCase)) { continue }
+  if ($fileFullPath.StartsWith($webRootPrefix, [StringComparison]::OrdinalIgnoreCase)) { $webFileCount++; continue }
+  throw "unexpected VST3 bundle file: $fileFullPath"
+}
+"@
+foreach ($bundleFile in $bundleFiles) {
+  $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)
+  if ($unsafe) { return }
+  throw "unexpected VST3 bundle file: $fileFullPath"
+}
+'@
+Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText $blockCommentDecoy)) 'the AST validator rejects a safe-loop block-comment decoy around unsafe executable code'
+Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText $stringDecoy)) 'the AST validator rejects a safe-loop string decoy around unsafe executable code'
+Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText $inlineBreakAlternate)) 'the AST validator rejects an inline break admission path'
+Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText $inlineReturnAlternate)) 'the AST validator rejects an inline return admission path'
+Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText $thirdAdmissionAlternate)) 'the AST validator rejects a third continue admission branch'
+Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText 'foreach ($bundleFile in')) 'the AST validator rejects PowerShell parse errors'
 Assert-Matches $evidenceStep '\$webFileCount\s*=\s*0[\s\S]*?\$webFileCount\+\+[\s\S]*?if\s*\(\$webFileCount\s+-eq\s+0\)\s*\{[\s\S]*?throw' 'the CI evidence gate explicitly rejects a bundle with no web files'
 Assert-Matches $evidenceStep '\$content\s*=\s*\$content\.Replace\(\$rawWorkspace,\s*''<workspace>''\)' 'the CI evidence step retains report path sanitization after the bundle allowlist'
 Assert-Matches $evidenceStep 'Compare-Object\s+-ReferenceObject\s+\$reports\s+-DifferenceObject\s+\$stagedReports' 'the CI evidence step retains its staged-report allowlist'
