@@ -140,11 +140,12 @@ function Test-CiEvidenceAllowlistControlFlow {
         [ref]$parseErrors)
     if (@($parseErrors).Count -ne 0) { return $false }
 
-    $allForEachLoops = @($scriptAst.FindAll({
-        param($node)
-        $node -is [System.Management.Automation.Language.ForEachStatementAst]
-    }, $true))
-    $bundleLoops = @($allForEachLoops | Where-Object {
+    if ($null -eq $scriptAst.EndBlock) { return $false }
+    $topLevelStatements = @($scriptAst.EndBlock.Statements)
+    $bundleLoops = @($topLevelStatements | Where-Object {
+        if ($_ -isnot [System.Management.Automation.Language.ForEachStatementAst]) {
+            return $false
+        }
         $conditionExpression = Get-SinglePipelineExpressionAst -Pipeline $_.Condition
         Test-VariableExpressionAst -Ast $conditionExpression -ExpectedName 'bundleFiles'
     })
@@ -344,6 +345,38 @@ foreach ($bundleFile in $bundleFiles) {
   throw "unexpected VST3 bundle file: $fileFullPath"
 }
 '@
+$dormantFunctionDecoy = @'
+function Invoke-DormantBundleAllowlist {
+  foreach ($bundleFile in $bundleFiles) {
+    $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)
+    if ([string]::Equals($fileFullPath, $moduleFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+      continue
+    }
+    if ($fileFullPath.StartsWith($webRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+      $webFileCount++
+      continue
+    }
+    throw "unexpected VST3 bundle file: $fileFullPath"
+  }
+}
+'@
+$dormantScriptBlockDecoy = @'
+$dormantBundleAllowlist = {
+  foreach ($bundleFile in $bundleFiles) {
+    $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)
+    if ([string]::Equals($fileFullPath, $moduleFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+      continue
+    }
+    if ($fileFullPath.StartsWith($webRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+      $webFileCount++
+      continue
+    }
+    throw "unexpected VST3 bundle file: $fileFullPath"
+  }
+}
+'@
+Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText $dormantScriptBlockDecoy)) 'the AST validator rejects a safe allowlist loop placed only inside an assigned script block'
+Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText $dormantFunctionDecoy)) 'the AST validator rejects a safe allowlist loop placed only inside an uninvoked function'
 Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText $blockCommentDecoy)) 'the AST validator rejects a safe-loop block-comment decoy around unsafe executable code'
 Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText $stringDecoy)) 'the AST validator rejects a safe-loop string decoy around unsafe executable code'
 Assert-True (-not (Test-CiEvidenceAllowlistControlFlow -ScriptText $inlineBreakAlternate)) 'the AST validator rejects an inline break admission path'
