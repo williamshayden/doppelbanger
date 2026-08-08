@@ -33,6 +33,7 @@
       "targets": [
         "StateCodecTests",
         "EditorBridgeTests",
+        "EditorSnapshotTests",
         "PluginLifecycleTests",
         "Doppelbanger-vst3"
       ]

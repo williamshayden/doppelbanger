@@ -235,6 +235,7 @@ get_build_preset_targets(${release_build_preset_index} release_build_targets)
 set(expected_release_build_targets
   StateCodecTests
   EditorBridgeTests
+  EditorSnapshotTests
   PluginLifecycleTests
   Doppelbanger-vst3)
 if(NOT "${release_build_targets}" STREQUAL "${expected_release_build_targets}")

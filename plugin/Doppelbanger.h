@@ -4,7 +4,16 @@
 #include "StateCodec.h"
 
 #include <atomic>
+#include <array>
 #include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+
+#ifdef WEBVIEW_EDITOR_DELEGATE
+#include "EditorBridge.h"
+#endif
 
 enum EParams {
   kLowEqParam = 0,
@@ -15,6 +24,56 @@ enum EParams {
 };
 
 inline constexpr int kNumPresets = 1;
+
+namespace doppelbanger::editor {
+
+inline constexpr std::size_t kMaxOutboundEnvelopeBytes = 4096;
+
+struct SnapshotParameter {
+  int id = -1;
+  double normalized = 0.0;
+  double display = 0.0;
+};
+
+struct EditorSnapshot {
+  std::array<SnapshotParameter, 4> parameters{};
+  bool bypassed = false;
+  bool dspReady = false;
+  std::uint64_t generation = 0;
+};
+
+enum class PublicationKind {
+  kNone,
+  kSnapshot,
+  kParameterChanged,
+  kBypassChanged,
+};
+
+struct Publication {
+  PublicationKind kind = PublicationKind::kNone;
+  std::string envelope;
+};
+
+[[nodiscard]] std::string BuildStateSnapshotEnvelope(const EditorSnapshot& snapshot);
+[[nodiscard]] std::string BuildParameterChangedEnvelope(const SnapshotParameter& parameter);
+[[nodiscard]] std::string BuildBypassChangedEnvelope(bool bypassed);
+[[nodiscard]] std::string BuildCompatibilityErrorEnvelope(std::string_view code);
+[[nodiscard]] std::string BuildJavaScriptDelivery(std::string_view envelope);
+[[nodiscard]] std::optional<std::string> ResolveInstalledEditorResource(
+    std::string_view contentsResources, std::string_view requestedPath);
+
+class EditorSnapshotPublisher {
+ public:
+  [[nodiscard]] Publication Publish(const EditorSnapshot& snapshot,
+                                    bool forceSnapshot);
+  void Reset() noexcept;
+
+ private:
+  bool hasLast_ = false;
+  EditorSnapshot last_{};
+};
+
+}  // namespace doppelbanger::editor
 
 class Doppelbanger final : public iplug::Plugin {
  public:
@@ -36,6 +95,17 @@ class Doppelbanger final : public iplug::Plugin {
   Steinberg::tresult PLUGIN_API process(Steinberg::Vst::ProcessData& data) override;
   Steinberg::tresult PLUGIN_API setState(Steinberg::IBStream* state) override;
   Steinberg::tresult PLUGIN_API getState(Steinberg::IBStream* state) override;
+
+  [[nodiscard]] bool IsProcessorReadyForEditor() const noexcept;
+
+#ifdef WEBVIEW_EDITOR_DELEGATE
+  void OnMessageFromWebView(const char* json) override;
+  void OnWebContentLoaded() override;
+  bool OnCanNavigateToURL(const char* url) override;
+  bool OnCanDownloadMIMEType(const char* mimeType) override;
+  void OnIdle() override;
+  void CloseWindow() override;
+#endif
 
  private:
   struct StatePacket {
@@ -101,7 +171,25 @@ class Doppelbanger final : public iplug::Plugin {
   StateMailbox mPendingState;
   mutable StateMailbox mPublishedState;
   mutable StatePacket mUiStateCache{};
+  static_assert(std::atomic<bool>::is_always_lock_free);
   std::atomic<std::uint32_t> mConfiguredSampleRate{0};
+  std::atomic<bool> mProcessorReady{false};
   std::uint64_t mNextStateGeneration = 1;
   std::uint64_t mAudioStateGeneration = 0;
+
+#ifdef WEBVIEW_EDITOR_DELEGATE
+  class EditorHostAdapter;
+
+  [[nodiscard]] bool PublishEditorSnapshot(bool forceSnapshot);
+  [[nodiscard]] bool SendEditorEnvelope(std::string_view envelope);
+  void SendCompatibilityError(std::string_view code);
+
+  std::unique_ptr<EditorHostAdapter> mEditorHost;
+  std::unique_ptr<doppelbanger::editor::EditorSession> mEditorSession;
+  doppelbanger::editor::EditorSnapshotPublisher mEditorSnapshots;
+  bool mEditorAvailable = false;
+  // A close can occur before WebView2 becomes ready (or after resource loading
+  // fails). Keep one close notification pending for that lifecycle as well.
+  bool mEditorLifecycleOpen = true;
+#endif
 };

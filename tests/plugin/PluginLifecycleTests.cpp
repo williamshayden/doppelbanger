@@ -405,6 +405,36 @@ void ComponentIdentityAndFormatContract() {
   Expect(hosted.plugin.createView("editor") == nullptr, "headless component has no editor");
 }
 
+void ProcessorReadinessTracksLifecycleWithoutCreatingAnEditor() {
+  Doppelbanger unconfigured(iplug::InstanceInfo{});
+  Expect(!unconfigured.IsProcessorReadyForEditor(),
+         "an unconfigured component reports an unavailable processor");
+  unconfigured.OnActivate(true);
+  Expect(unconfigured.IsProcessorReadyForEditor(),
+         "processor creation publishes readiness without constructing an editor");
+  unconfigured.OnActivate(false);
+  Expect(!unconfigured.IsProcessorReadyForEditor(),
+         "processor destruction clears readiness without constructing an editor");
+
+  HostedInstance hosted;
+  Expect(hosted.Initialize(64), "processor readiness fixture initializes");
+  Expect(hosted.plugin.IsProcessorReadyForEditor(),
+         "successful processor creation publishes readiness atomically");
+  ProcessSetup rejected{kRealtime, kSample32, 64, 12'345.0};
+  Expect(hosted.plugin.setupProcessing(rejected) == kResultFalse,
+         "an unsupported processing configuration is rejected");
+  Expect(hosted.plugin.IsProcessorReadyForEditor(),
+         "a rejected reconfiguration leaves the existing processor readiness truthful");
+  Expect(hosted.plugin.setProcessing(false) == kResultOk,
+         "processor readiness fixture stops processing");
+  hosted.processing = false;
+  Expect(hosted.plugin.setActive(false) == kResultOk,
+         "processor readiness fixture deactivates");
+  hosted.active = false;
+  Expect(!hosted.plugin.IsProcessorReadyForEditor(),
+         "processor destruction clears readiness atomically");
+}
+
 void HostAutomationIsCentidecibelStepped() {
   HostedInstance hosted;
   Expect(hosted.Initialize(64), "stepped-automation component activates and processes");
@@ -972,6 +1002,7 @@ void ConcurrentStateAndProcessingRemainSafe() {
 
 int main() {
   ComponentIdentityAndFormatContract();
+  ProcessorReadinessTracksLifecycleWithoutCreatingAnEditor();
   HostAutomationIsCentidecibelStepped();
   SilenceImpulseAutomationAndBypass();
   StateWriteFailuresAreContained();

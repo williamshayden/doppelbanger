@@ -57,6 +57,30 @@ target_compile_features(EditorBridgeTests PRIVATE cxx_std_17)
 target_compile_options(EditorBridgeTests PRIVATE /W4 /WX /EHsc)
 add_test(NAME EditorBridgeTests COMMAND EditorBridgeTests)
 
+add_executable(EditorSnapshotTests
+  tests/plugin/EditorSnapshotTests.cpp
+  plugin/Doppelbanger.cpp
+  plugin/EditorBridge.cpp
+  plugin/StateCodec.cpp
+  "${IPLUG2_DIR}/Dependencies/IPlug/VST3_SDK/public.sdk/source/common/memorystream.cpp"
+  "${IPLUG2_DIR}/Dependencies/IPlug/VST3_SDK/public.sdk/source/vst/hosting/parameterchanges.cpp")
+target_include_directories(EditorSnapshotTests PRIVATE
+  "${CMAKE_SOURCE_DIR}/include"
+  "${CMAKE_SOURCE_DIR}/plugin"
+  "${CMAKE_SOURCE_DIR}/third_party/iPlug2/Dependencies/Extras")
+target_compile_definitions(EditorSnapshotTests PRIVATE
+  NO_IGRAPHICS
+  PLUG_HAS_UI=0
+  SAMPLE_TYPE_FLOAT)
+target_compile_features(EditorSnapshotTests PRIVATE cxx_std_17)
+target_compile_options(EditorSnapshotTests PRIVATE
+  /W4 /WX /EHsc /wd4100 /wd4456 /wd4701)
+target_link_libraries(EditorSnapshotTests PRIVATE
+  iPlug2::VST3
+  doppelbanger_rust)
+add_dependencies(EditorSnapshotTests doppelbanger_rust)
+add_test(NAME EditorSnapshotTests COMMAND EditorSnapshotTests)
+
 add_executable(PluginLifecycleTests
   tests/plugin/PluginLifecycleTests.cpp
   plugin/Doppelbanger.cpp
@@ -65,7 +89,8 @@ add_executable(PluginLifecycleTests
   "${IPLUG2_DIR}/Dependencies/IPlug/VST3_SDK/public.sdk/source/vst/hosting/parameterchanges.cpp")
 target_include_directories(PluginLifecycleTests PRIVATE
   "${CMAKE_SOURCE_DIR}/include"
-  "${CMAKE_SOURCE_DIR}/plugin")
+  "${CMAKE_SOURCE_DIR}/plugin"
+  "${CMAKE_SOURCE_DIR}/third_party/iPlug2/Dependencies/Extras")
 target_compile_definitions(PluginLifecycleTests PRIVATE
   NO_IGRAPHICS
   PLUG_HAS_UI=0
