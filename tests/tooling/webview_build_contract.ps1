@@ -85,11 +85,23 @@ Assert-Matches $evidenceStep 'powershell\.exe\s+-NoProfile\s+-File\s+\$webAssetC
 Assert-Matches $evidenceStep '\$moduleFullPath\s*=\s*\[System\.IO\.Path\]::GetFullPath\(\$module\)' 'the CI evidence allowlist normalizes the exact module path'
 Assert-Matches $evidenceStep '\$webRootFullPath\s*=\s*\[System\.IO\.Path\]::GetFullPath\(\$webRoot\)\.TrimEnd\(' 'the CI evidence allowlist normalizes and trims the exact web root'
 Assert-Matches $evidenceStep '\$webRootPrefix\s*=\s*\$webRootFullPath\s*\+\s*\[System\.IO\.Path\]::DirectorySeparatorChar' 'the CI evidence allowlist adds a trailing separator to prevent sibling-prefix bypasses'
-Assert-Matches $evidenceStep '\$bundleFiles\s*=\s*@\(Get-ChildItem\s+-LiteralPath\s+\$bundle\s+-Recurse\s+-File\)' 'the CI evidence allowlist enumerates every bundle file'
-Assert-Matches $evidenceStep '\[string\]::Equals\(\$fileFullPath,\s*\$moduleFullPath,\s*\[StringComparison\]::OrdinalIgnoreCase\)' 'the CI evidence allowlist admits only the exact module using Windows-safe comparison'
-Assert-Matches $evidenceStep '\$fileFullPath\.StartsWith\(\$webRootPrefix,\s*\[StringComparison\]::OrdinalIgnoreCase\)' 'the CI evidence allowlist admits descendants only beneath the separator-terminated web root'
+Assert-Matches $evidenceStep '\$bundleFiles\s*=\s*@\(Get-ChildItem\s+-LiteralPath\s+\$bundle\s+-Recurse\s+-File\s+-Force\)' 'the CI evidence allowlist enumerates every bundle file including hidden files'
+$orderedAllowlistPattern = '(?ms)foreach\s*\(\$bundleFile\s+in\s+\$bundleFiles\)\s*\{\s*' +
+    '\$fileFullPath\s*=\s*\[System\.IO\.Path\]::GetFullPath\(\$bundleFile\.FullName\)\s*' +
+    'if\s*\(\[string\]::Equals\(\$fileFullPath,\s*\$moduleFullPath,\s*\[StringComparison\]::OrdinalIgnoreCase\)\)\s*\{\s*' +
+    'continue\s*\}\s*' +
+    'if\s*\(\$fileFullPath\.StartsWith\(\$webRootPrefix,\s*\[StringComparison\]::OrdinalIgnoreCase\)\)\s*\{\s*' +
+    '\$webFileCount\+\+\s*continue\s*\}\s*' +
+    'throw\s+"unexpected VST3 bundle file:\s*\$fileFullPath"\s*\}'
+Assert-Matches $evidenceStep $orderedAllowlistPattern 'the CI evidence allowlist binds normalized candidate, exact module admission, web descendant admission, and unconditional rejection in order'
+$evidenceContinueCount = [regex]::Matches($evidenceStep, '(?m)^[ \t]*continue[ \t]*$').Count
+Assert-True ($evidenceContinueCount -eq 2) 'the CI evidence step has exactly the two ordered allowlist continue statements'
+Assert-True ($evidenceStep -notmatch '(?m)^[ \t]*(?:break|return)(?:[ \t]+.*)?$') 'the CI evidence allowlist has no alternate unconditional admission path'
 Assert-Matches $evidenceStep '\$webFileCount\s*=\s*0[\s\S]*?\$webFileCount\+\+[\s\S]*?if\s*\(\$webFileCount\s+-eq\s+0\)\s*\{[\s\S]*?throw' 'the CI evidence gate explicitly rejects a bundle with no web files'
-Assert-Matches $evidenceStep 'throw\s+"unexpected VST3 bundle file:' 'the CI evidence allowlist rejects every file outside the exact module and validated web root'
+Assert-Matches $evidenceStep '\$content\s*=\s*\$content\.Replace\(\$rawWorkspace,\s*''<workspace>''\)' 'the CI evidence step retains report path sanitization after the bundle allowlist'
+Assert-Matches $evidenceStep 'Compare-Object\s+-ReferenceObject\s+\$reports\s+-DifferenceObject\s+\$stagedReports' 'the CI evidence step retains its staged-report allowlist'
+Assert-Matches $workflow '(?ms)- name:\s*Require clean checkout.*?git diff --check.*?git status --porcelain' 'the workflow retains clean-checkout enforcement after evidence preparation'
+Assert-Matches $workflow '(?ms)- name:\s*Upload unsigned VST3 and reports\s*.*?uses:\s*actions/upload-artifact@v7.*?Doppelbanger\.vst3.*?var/validation/native-foundation/ci' 'the workflow retains the reviewed bundle and sanitized-report artifact upload'
 
 $config = Get-Content -LiteralPath $configPath -Raw
 foreach ($requiredDefinition in @(

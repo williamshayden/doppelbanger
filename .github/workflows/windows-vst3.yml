@@ -145,7 +145,7 @@ jobs:
             [System.IO.Path]::AltDirectorySeparatorChar
           )
           $webRootPrefix = $webRootFullPath + [System.IO.Path]::DirectorySeparatorChar
-          $bundleFiles = @(Get-ChildItem -LiteralPath $bundle -Recurse -File)
+          $bundleFiles = @(Get-ChildItem -LiteralPath $bundle -Recurse -File -Force)
           $webFileCount = 0
           foreach ($bundleFile in $bundleFiles) {
             $fileFullPath = [System.IO.Path]::GetFullPath($bundleFile.FullName)

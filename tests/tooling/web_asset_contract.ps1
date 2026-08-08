@@ -46,7 +46,7 @@ function Assert-WebAssetBundle {
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) { throw "web asset root is missing: $Root" }
     $indexPath = Join-Path $Root 'index.html'
     if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) { throw 'web asset bundle must contain one index.html' }
-    $files = @(Get-ChildItem -LiteralPath $Root -Recurse -File | Sort-Object FullName)
+    $files = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force | Sort-Object FullName)
     $relativeFiles = @{}
     foreach ($file in $files) {
         $relative = Get-RelativeWebPath -Root $Root -Path $file.FullName
@@ -105,6 +105,24 @@ try {
     [IO.File]::WriteAllText((Join-Path $assets 'orphan-11223344.js'), 'console.log("orphan")')
     Assert-Throws { Assert-WebAssetBundle -Root $fixtureRoot } 'an unreferenced packaged asset is rejected'
     Remove-Item -LiteralPath (Join-Path $assets 'orphan-11223344.js') -Force
+    $hiddenUnexpectedPath = Join-Path $fixtureRoot 'hidden-bypass.txt'
+    $hiddenOriginalAttributes = $null
+    try {
+        [IO.File]::WriteAllText($hiddenUnexpectedPath, 'hidden files remain inside the closed world')
+        $hiddenOriginalAttributes = [IO.File]::GetAttributes($hiddenUnexpectedPath)
+        [IO.File]::SetAttributes($hiddenUnexpectedPath, ($hiddenOriginalAttributes -bor [IO.FileAttributes]::Hidden))
+        $hiddenAttributes = [IO.File]::GetAttributes($hiddenUnexpectedPath)
+        Assert-True (($hiddenAttributes -band [IO.FileAttributes]::Hidden) -ne 0) 'the hidden-file fixture has the native Windows Hidden attribute'
+        Assert-Throws { Assert-WebAssetBundle -Root $fixtureRoot } 'a hidden unexpected packaged file is rejected'
+    }
+    finally {
+        if (Test-Path -LiteralPath $hiddenUnexpectedPath) {
+            if ($null -ne $hiddenOriginalAttributes) {
+                [IO.File]::SetAttributes($hiddenUnexpectedPath, $hiddenOriginalAttributes)
+            }
+            Remove-Item -LiteralPath $hiddenUnexpectedPath -Force
+        }
+    }
     $webSocketFixtures = @(
         [pscustomobject]@{ Name = 'ws single literal'; Content = "new WebSocket('ws://editor.example/socket')" },
         [pscustomobject]@{ Name = 'wss single literal'; Content = "new WebSocket('wss://editor.example/socket')" },
